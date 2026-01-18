@@ -8,30 +8,26 @@ class Vigil {
         this.alertCount = 0;
         this.vision = null;
         this.totalDetections = 0;
-        this.processingQueue = Promise.resolve(); // Add processing queue
+        this.processingQueue = Promise.resolve();
 
-        // Initialize the compound matcher
         this.analyzer = new DescAnalyzer({
-            minMatchScore: 5  // Lowered from 5 to catch near-matches
+            minMatchScore: 5
         });
 
-        // ai-generated config
         this.config = {
             alertThresholds: {
                 awareness: 15,
                 caution: 30,
                 alert: 60
             },
-            removalTimeoutSeconds: 600 // 10 minutes
+            removalTimeoutSeconds: 600
         };
 
         this.initUI();
     }
 
-    // UI was AI-generated
     async initUI() {
         try {
-            // Load available videos
             const response = await fetch('/api/videos');
             const videos = await response.json();
             console.log('Loaded videos:', videos);
@@ -47,7 +43,6 @@ class Vigil {
         }
         catch (error) {
             console.error('Error loading videos:', error);
-            // Add a fallback option for testing
             const select = document.getElementById('videoSelect');
             const option = document.createElement('option');
             option.value = '/test-video.mp4';
@@ -55,7 +50,6 @@ class Vigil {
             select.appendChild(option);
         }
         
-        // Event listeners
         const select = document.getElementById('videoSelect');
         select.addEventListener('change', (e) => {
             const video = document.getElementById('videoPlayer');
@@ -76,11 +70,11 @@ class Vigil {
             "count": number
         }
 
-        Do NOT write "child." Do NOT substitute it for gender.
+        VERY IMPORTANT: Do NOT write "child."
 
         CRITICAL COLOR RULES:
         - ALWAYS identify specific colors, even if dark/dim: "dark green", "dark blue", "dark gray", "navy", etc.
-        - NEVER use just "dark" or "light" alone - always include the actual color
+        - NEVER use just "dark" or "light" or "light-colored" alone - always include the actual color
         - In extreme uncertainty, you can use "dark"
         - Common colors in dim light: dark green, dark blue, navy, charcoal, gray, brown, maroon
 
@@ -104,28 +98,23 @@ class Vigil {
 
         if (!videoPath) return;
 
-        // reset
         this.personHistory = [];
         this.alertCount = 0;
         this.totalDetections = 0;
         this.updateStats();
         document.getElementById('detectionFeed').innerHTML = '';
 
-        // Fetch video file
         const response = await fetch(videoPath);
         const blob = await response.blob();
         const file = new File([blob], videoPath.split('/').pop(), { type: 'video/mp4' });
         
-        // Start video
         videoElement.play();
         
-        // Update UI
         document.getElementById('status').className = 'status active';
         document.getElementById('status').textContent = 'Analyzing...';
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
         
-        // overshoot
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
@@ -135,10 +124,9 @@ class Vigil {
                 clip_length_seconds: 3,
                 delay_seconds: 3,
                 fps: 15,
-                sampling_ratio: 0.2
+                sampling_ratio: 0.1
             },
             onResult: (result) => {
-                // Queue the detection to process sequentially
                 this.processingQueue = this.processingQueue.then(() => this.handleDetection(result));
             }
         })
@@ -158,29 +146,21 @@ class Vigil {
         document.getElementById('stopBtn').disabled = true;
         document.getElementById('videoPlayer').pause();
         
-        // Generate end report
         this.generateEndReport();
     }
 
     handleDetection(result) {
         try {
-            // Check if result exists and has content
             if (!result.result || result.result.trim() === '') {
                 console.warn("Received empty result, skipping...");
                 return;
             }
 
-            // Clean the result - remove markdown code blocks if present
             let cleanedResult = result.result.trim();
-            
-            // Remove markdown code fences (```json and ```)
             cleanedResult = cleanedResult.replace(/```json\s*/g, '');
             cleanedResult = cleanedResult.replace(/```\s*/g, '');
-            
-            // Remove any stray backticks
             cleanedResult = cleanedResult.replace(/`/g, '');
             
-            // Try to find JSON object if there's surrounding text
             const jsonMatch = cleanedResult.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 cleanedResult = jsonMatch[0];
@@ -193,11 +173,9 @@ class Vigil {
                 this.totalDetections++;
 
                 data.people.forEach((person) => {
-                    // Check if description is too vague to be useful
                     const specificityScore = this.getDescriptionSpecificity(person.description);
                     
                     if (specificityScore < 2) {
-                        // Track as generic silhouette instead
                         this.trackSilhouette(person, timestamp);
                     } else {
                         this.trackPerson(person, timestamp);
@@ -212,7 +190,6 @@ class Vigil {
             console.log("Raw result:", result.result);
             console.log("Attempted to parse:", result.result.substring(0, 200));
             console.log("Skipping this frame and continuing...");
-            // Don't crash - just skip this bad result and continue
         }
     }
     
@@ -220,29 +197,29 @@ class Vigil {
         const normalized = description.toLowerCase();
         let specificityScore = 0;
         
-        // Specific colors (not just dark/light) add points
-        const specificColors = ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
+        const specificColors = ['black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
         for (const color of specificColors) {
             if (normalized.includes(color)) specificityScore += 2;
         }
         
-        // Accessories add points (very distinctive)
         const accessories = ['backpack', 'bag', 'headphones', 'glasses', 'hat', 'cap', 'beanie'];
         for (const accessory of accessories) {
             if (normalized.includes(accessory)) specificityScore += 3;
         }
         
-        // Specific garment types add points
         const specificGarments = ['puffer', 'puffy', 'hoodie', 'sweater', 'jeans', 'shorts'];
         for (const garment of specificGarments) {
             if (normalized.includes(garment)) specificityScore += 1;
+        }
+
+        if (normalized.includes('female') || normalized.includes('male')) {
+            specificityScore += 1;
         }
         
         return specificityScore;
     }
     
     trackSilhouette(newPerson, timestamp) {
-        // Find or create the generic silhouette tracker
         let silhouette = this.personHistory.find(p => p.isSilhouette);
         
         if (!silhouette) {
@@ -253,17 +230,16 @@ class Vigil {
                 firstSeen: timestamp,
                 lastSeen: timestamp,
                 allDescriptions: [],
-                vagueDescriptions: []
+                vagueDescriptions: [],
+                confidence: 'silhouette'
             };
             this.personHistory.push(silhouette);
             this.addLog(`  👤 Created silhouette tracker for vague detections`);
         }
         
-        // Update silhouette tracking
         silhouette.timestamps.push(timestamp);
         silhouette.lastSeen = timestamp;
         
-        // Store the vague description
         if (!silhouette.vagueDescriptions.includes(newPerson.description)) {
             silhouette.vagueDescriptions.push(newPerson.description);
         }
@@ -273,7 +249,6 @@ class Vigil {
         
         this.addLog(`  👤 Silhouette detected (${count}x, ${this.formatDuration(durationSeconds)}): "${newPerson.description}"`);
         
-        // Time-based alerts for silhouette
         const thresholds = this.config.alertThresholds;
         const prevDuration = count > 1 ? this.getTimeDurationSeconds(silhouette.firstSeen, silhouette.timestamps[silhouette.timestamps.length - 2]) : 0;
         
@@ -291,7 +266,6 @@ class Vigil {
     }
 
     trackPerson(newPerson, timestamp) {
-        // CLEANUP: Remove people not seen in configured timeout (default 10 minutes)
         const timeoutSeconds = this.config.removalTimeoutSeconds;
         const currentTime = new Date(timestamp);
         
@@ -311,12 +285,11 @@ class Vigil {
                     minutesSinceLastSeen: Math.floor(secondsSinceLastSeen / 60)
                 });
                 
-                return false; // Remove this person
+                return false;
             }
-            return true; // Keep this person
+            return true;
         });
         
-        // Log removed people
         removedPeople.forEach(removed => {
             this.addLog(
                 `  🕐 Removed from tracking (inactive ${removed.minutesSinceLastSeen}m): "${removed.description}" ` +
@@ -325,17 +298,13 @@ class Vigil {
             );
         });
         
-        // Use the compound matcher to find similar person
         let bestMatch = null;
         let bestScore = 0;
-        let oldestMatch = null;
-        let oldestMatchScore = 0;
         
         console.log(`\n=== Matching new person: "${newPerson.description}" ===`);
         console.log(`Currently tracking ${this.personHistory.length} people`);
         
         for (const existingPerson of this.personHistory) {
-            // Skip silhouette entries when matching specific people
             if (existingPerson.isSilhouette) continue;
             
             const matchResult = this.analyzer.matchScore(
@@ -343,7 +312,6 @@ class Vigil {
                 newPerson.description
             );
             
-            // Debug logging to see match scores
             if (matchResult.score > 3) {
                 console.log(`Comparing: "${existingPerson.description}"`);
                 console.log(`  Score: ${matchResult.score.toFixed(1)}, Matched: ${matchResult.matched}, Threshold: ${matchResult.threshold}`);
@@ -355,38 +323,14 @@ class Vigil {
                 bestScore = matchResult.score;
                 console.log(`  ✓ New best match! Score: ${bestScore.toFixed(1)}`);
             }
-            
-            // Track the oldest matching person (person with earliest firstSeen)
-            if (matchResult.matched && (!oldestMatch || new Date(existingPerson.firstSeen) < new Date(oldestMatch.firstSeen))) {
-                oldestMatch = existingPerson;
-                oldestMatchScore = matchResult.score;
-            }
         }
         
         console.log(`Best match found: ${bestMatch ? 'YES (score: ' + bestScore.toFixed(1) + ')' : 'NO'}`);
 
         if (bestMatch) {
-            // Update both timestamps and lastSeen for the matched person
             bestMatch.timestamps.push(timestamp);
             bestMatch.lastSeen = timestamp;
             
-            // If the oldest match is different from best match, also update it
-            if (oldestMatch && oldestMatch !== bestMatch) {
-                oldestMatch.timestamps.push(timestamp);
-                oldestMatch.lastSeen = timestamp;
-                
-                // Store description for oldest match too
-                if (!oldestMatch.allDescriptions) {
-                    oldestMatch.allDescriptions = [oldestMatch.description];
-                }
-                if (!oldestMatch.allDescriptions.includes(newPerson.description)) {
-                    oldestMatch.allDescriptions.push(newPerson.description);
-                }
-                
-                this.addLog(`  ⏰ Also matched to oldest tracked person: "${oldestMatch.description}" (score=${oldestMatchScore.toFixed(1)})`);
-            }
-            
-            // Store all descriptions seen for this person
             if (!bestMatch.allDescriptions) {
                 bestMatch.allDescriptions = [bestMatch.description];
             }
@@ -394,19 +338,28 @@ class Vigil {
                 bestMatch.allDescriptions.push(newPerson.description);
             }
             
-            const durationSeconds = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.lastSeen);
             const count = bestMatch.timestamps.length;
             
-            // Get detailed match breakdown
+            // Mark as confirmed after 5+ sightings
+            if (count >= 5 && bestMatch.confidence === 'tentative') {
+                bestMatch.confidence = 'confirmed';
+                this.addLog(`  ✓ Person confirmed after ${count} sightings`, 'system');
+            }
+            
+            // Consolidate with other matches (only for tentative people to save cycles)
+            if (bestMatch.confidence === 'tentative' || count % 5 === 0) {
+                this.consolidateMatches(bestMatch);
+            }
+            
+            const durationSeconds = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.lastSeen);
+            
             const matchResult = this.analyzer.matchScore(bestMatch.description, newPerson.description);
             const breakdownStr = this.analyzer.formatBreakdown(matchResult.breakdown);
             
-            this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
-            // this.addLog(`     Original: "${bestMatch.description}"`);
+            const confidenceLabel = bestMatch.confidence === 'confirmed' ? ' ✓' : '';
+            this.addLog(`  ↻ Recurring person${confidenceLabel} (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
             this.addLog(`"${newPerson.description}"`);
-            this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
-            // over here
-            // Time-based alerts
+            
             const thresholds = this.config.alertThresholds;
             const prevDuration = count > 1 ? this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]) : 0;
             
@@ -428,11 +381,62 @@ class Vigil {
                 timestamps: [timestamp],
                 firstSeen: timestamp,
                 lastSeen: timestamp,
-                allDescriptions: [newPerson.description]
+                allDescriptions: [newPerson.description],
+                confidence: 'tentative'
             };
                 
             this.personHistory.push(personRecord);
-            this.addLog(`  + New person tracked: ${newPerson.description}`);
+            this.addLog(`  + New person tracked (tentative): ${newPerson.description}`);
+        }
+    }
+
+    consolidateMatches(targetPerson) {
+        const toRemove = [];
+        
+        for (let i = 0; i < this.personHistory.length; i++) {
+            const otherPerson = this.personHistory[i];
+            
+            if (otherPerson === targetPerson || otherPerson.isSilhouette) continue;
+            
+            const matchResult = this.analyzer.matchScore(
+                targetPerson.description,
+                otherPerson.description
+            );
+            
+            if (matchResult.matched) {
+                targetPerson.timestamps.push(...otherPerson.timestamps);
+                
+                if (new Date(otherPerson.firstSeen) < new Date(targetPerson.firstSeen)) {
+                    targetPerson.firstSeen = otherPerson.firstSeen;
+                }
+                
+                if (new Date(otherPerson.lastSeen) > new Date(targetPerson.lastSeen)) {
+                    targetPerson.lastSeen = otherPerson.lastSeen;
+                }
+                
+                if (otherPerson.allDescriptions) {
+                    targetPerson.allDescriptions = [
+                        ...new Set([...targetPerson.allDescriptions, ...otherPerson.allDescriptions])
+                    ];
+                }
+                
+                toRemove.push(i);
+                
+                this.addLog(
+                    `  🔗 Consolidated: merged "${otherPerson.description}" ` +
+                    `(${otherPerson.timestamps.length} detections) into main track`,
+                    'system'
+                );
+            }
+        }
+        
+        for (let i = toRemove.length - 1; i >= 0; i--) {
+            this.personHistory.splice(toRemove[i], 1);
+        }
+        
+        if (toRemove.length > 0) {
+            targetPerson.timestamps.sort((a, b) => new Date(a) - new Date(b));
+            targetPerson.confidence = 'confirmed';
         }
     }
 
@@ -449,7 +453,15 @@ class Vigil {
     }
 
     updateStats() {
-        document.getElementById('uniquePeople').textContent = this.personHistory.length;
+        const confirmed = this.personHistory.filter(p => p.confidence === 'confirmed').length;
+        const tentative = this.personHistory.filter(p => p.confidence === 'tentative').length;
+        
+        let displayHTML = `${this.personHistory.length}`;
+        if (tentative > 0) {
+            displayHTML += `<div style="font-size: 0.8em; color: #888; margin-top: 3px;">(${tentative} tentative)</div>`;
+        }
+        
+        document.getElementById('uniquePeople').innerHTML = displayHTML;
         document.getElementById('totalDetections').textContent = this.totalDetections;
         document.getElementById('alerts').textContent = this.alertCount;
     }
@@ -461,7 +473,6 @@ class Vigil {
         console.log(`Alerts triggered: ${this.alertCount}`);
         console.log("\n--- UNIQUE PEOPLE DETECTED ---\n");
         
-        // Sort by duration (longest first)
         const sortedPeople = [...this.personHistory].sort((a, b) => {
             const durationA = this.getTimeDurationSeconds(a.firstSeen, a.lastSeen);
             const durationB = this.getTimeDurationSeconds(b.firstSeen, b.lastSeen);
@@ -474,6 +485,7 @@ class Vigil {
             
             console.log(`Person #${index + 1}:`);
             console.log(`  Primary description: "${person.description}"`);
+            console.log(`  Confidence: ${person.confidence || 'N/A'}`);
             
             if (person.isSilhouette && person.vagueDescriptions && person.vagueDescriptions.length > 0) {
                 console.log(`  Vague descriptions captured:`);
@@ -495,19 +507,17 @@ class Vigil {
         
         console.log("==========================================\n");
         
-        // Also add to UI
         this.addLog(`\n========== SESSION COMPLETE ==========`, 'report');
         this.addLog(`${this.personHistory.length} unique people | ${this.totalDetections} total detections | ${this.alertCount} alerts`, 'report');
         
         sortedPeople.forEach((person, index) => {
             const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
             const detectionCount = person.timestamps.length;
-            const label = person.isSilhouette ? ' [SILHOUETTE]' : '';
+            const label = person.isSilhouette ? ' [SILHOUETTE]' : person.confidence === 'confirmed' ? ' ✓' : ' ?';
             this.addLog(`Person #${index + 1}: "${person.description}"${label} (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
         });
     }
 
-    // claude revised previous code for "clean-up"
     addLog(message, type = 'normal') {
         const feed = document.getElementById('detectionFeed');
         const item = document.createElement('div');
@@ -521,7 +531,6 @@ class Vigil {
         
         feed.insertBefore(item, feed.firstChild);
         
-        // Keep only last 100 items (increased for better session history)
         while (feed.children.length > 100) {
             feed.removeChild(feed.lastChild);
         }
