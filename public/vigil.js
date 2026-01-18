@@ -9,7 +9,7 @@ class Vigil {
         this.vision = null;
         this.totalDetections = 0;
 
-        this.analyzer = new DescAnalyzer({ minMatchScore: 7 });
+        this.analyzer = new DescAnalyzer({ minMatchScore: 6 });
 
         // ai-generated config
         this.config = {
