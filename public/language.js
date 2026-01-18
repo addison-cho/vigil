@@ -1,9 +1,7 @@
 export class DescAnalyzer {
     constructor(config = {}) {
         this.minMatchScoreNormal = config.minMatchScore || 7;
-        // this.minMatchScoreLowLight = config.minMatchScoreLowLight || 5.5; // More forgiving in low-light
-        this.lowLightMode = config.lowLightMode || false;
-        
+        // this.minMatchScoreLowLight = config.minMatchScoreLowLight || 5.5; // More forgiving in low-light        
         // Stopwords to remove during tokenization
         this.stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
             'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during', 'over', 'wearing', 
@@ -402,7 +400,6 @@ export class DescAnalyzer {
             matched: result.totalScore >= threshold,
             threshold: threshold,
             breakdown: result.breakdown,
-            mode: this.lowLightMode ? 'low-light' : 'normal',
             details: { description1, description2, words1, words2, bigrams1, bigrams2 }
         };
     }
@@ -414,10 +411,5 @@ export class DescAnalyzer {
             }
             return `${b.phrase} (+${b.score} ${b.type})`;
         }).join(', ');
-    }
-    
-    setLowLightMode(enabled) {
-        this.lowLightMode = enabled;
-        console.log(`🔦 Matching mode: ${enabled ? 'LOW-LIGHT (shape/build/accessories)' : 'NORMAL (colors/garments)'}`);
     }
 }

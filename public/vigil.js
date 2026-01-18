@@ -8,10 +8,11 @@ class Vigil {
         this.alertCount = 0;
         this.vision = null;
         this.totalDetections = 0;
+        this.processingQueue = Promise.resolve(); // Add processing queue
 
         // Initialize the compound matcher
         this.analyzer = new DescAnalyzer({
-            minMatchScore: 5
+            minMatchScore: 5  // Lowered from 5 to catch near-matches
         });
 
         // ai-generated config
@@ -20,7 +21,8 @@ class Vigil {
                 awareness: 15,
                 caution: 30,
                 alert: 60
-            }
+            },
+            removalTimeoutSeconds: 600 // 10 minutes
         };
 
         this.initUI();
@@ -63,15 +65,6 @@ class Vigil {
         
         document.getElementById('startBtn').addEventListener('click', () => this.start());
         document.getElementById('stopBtn').addEventListener('click', () => this.stop());
-        
-        // Low-light mode toggle
-        // const lowLightToggle = document.getElementById('lowLightToggle');
-        // if (lowLightToggle) {
-        //     lowLightToggle.addEventListener('change', (e) => {
-        //         this.analyzer.setLowLightMode(e.target.checked);
-        //         this.addLog(`${e.target.checked ? '🌙 Low-light mode: Focusing on build/shape/accessories' : '☀️ Normal mode: Focusing on colors/garments'}`, 'system');
-        //     });
-        // }
     }
 
     getPrompt() {
@@ -82,10 +75,10 @@ class Vigil {
             }],
             "count": number
         }
-        
-        Do NOT write "child". It is NOT a substitute for gender.
-        
-        CRITICAL Color rules:
+
+        Do NOT write "child." Do NOT substitute it for gender.
+
+        CRITICAL COLOR RULES:
         - ALWAYS identify specific colors, even if dark/dim: "dark green", "dark blue", "dark gray", "navy", etc.
         - NEVER use just "dark" or "light" alone - always include the actual color
         - In extreme uncertainty, you can use "dark"
@@ -101,7 +94,7 @@ class Vigil {
         - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
 
         Examples:
-        {"people": [{"description": "male, dark green puffer jacket, black pants"}], "count": 1}
+        {"people": [{"description": "male, dark green puffer jacket, black pants, backpack"}], "count": 1}
         {"people": [{"description": "female, red hoodie, blue jeans, headphones"}], "count": 1}`;
     }
 
@@ -145,7 +138,8 @@ class Vigil {
                 sampling_ratio: 0.2
             },
             onResult: (result) => {
-                this.handleDetection(result)
+                // Queue the detection to process sequentially
+                this.processingQueue = this.processingQueue.then(() => this.handleDetection(result));
             }
         })
 
@@ -227,7 +221,7 @@ class Vigil {
         let specificityScore = 0;
         
         // Specific colors (not just dark/light) add points
-        const specificColors = ['black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
+        const specificColors = ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
         for (const color of specificColors) {
             if (normalized.includes(color)) specificityScore += 2;
         }
@@ -242,11 +236,6 @@ class Vigil {
         const specificGarments = ['puffer', 'puffy', 'hoodie', 'sweater', 'jeans', 'shorts'];
         for (const garment of specificGarments) {
             if (normalized.includes(garment)) specificityScore += 1;
-        }
-        
-
-        if (normalized.includes('male') || normalized.includes('female')) {
-            specificityScore += 1;
         }
         
         return specificityScore;
@@ -330,7 +319,9 @@ class Vigil {
         // Log removed people
         removedPeople.forEach(removed => {
             this.addLog(
-                `  🕐 Removed from tracking (inactive ${removed.minutesSinceLastSeen}m): "${removed.description}" `
+                `  🕐 Removed from tracking (inactive ${removed.minutesSinceLastSeen}m): "${removed.description}" ` +
+                `(was seen ${removed.detectionCount}x over ${this.formatDuration(removed.durationTracked)})`, 
+                'system'
             );
         });
         
@@ -338,7 +329,10 @@ class Vigil {
         let bestMatch = null;
         let bestScore = 0;
         let oldestMatch = null;
-        // let oldestMatchScore = 0;
+        let oldestMatchScore = 0;
+        
+        console.log(`\n=== Matching new person: "${newPerson.description}" ===`);
+        console.log(`Currently tracking ${this.personHistory.length} people`);
         
         for (const existingPerson of this.personHistory) {
             // Skip silhouette entries when matching specific people
@@ -349,9 +343,17 @@ class Vigil {
                 newPerson.description
             );
             
+            // Debug logging to see match scores
+            if (matchResult.score > 3) {
+                console.log(`Comparing: "${existingPerson.description}"`);
+                console.log(`  Score: ${matchResult.score.toFixed(1)}, Matched: ${matchResult.matched}, Threshold: ${matchResult.threshold}`);
+                console.log(`  Breakdown:`, this.analyzer.formatBreakdown(matchResult.breakdown));
+            }
+            
             if (matchResult.matched && matchResult.score > bestScore) {
                 bestMatch = existingPerson;
                 bestScore = matchResult.score;
+                console.log(`  ✓ New best match! Score: ${bestScore.toFixed(1)}`);
             }
             
             // Track the oldest matching person (person with earliest firstSeen)
@@ -360,6 +362,8 @@ class Vigil {
                 oldestMatchScore = matchResult.score;
             }
         }
+        
+        console.log(`Best match found: ${bestMatch ? 'YES (score: ' + bestScore.toFixed(1) + ')' : 'NO'}`);
 
         if (bestMatch) {
             // Update both timestamps and lastSeen for the matched person
@@ -379,7 +383,7 @@ class Vigil {
                     oldestMatch.allDescriptions.push(newPerson.description);
                 }
                 
-                // this.addLog(`  ⏰ Also matched to oldest tracked person: "${oldestMatch.description}" (score=${oldestMatchScore.toFixed(1)})`);
+                this.addLog(`  ⏰ Also matched to oldest tracked person: "${oldestMatch.description}" (score=${oldestMatchScore.toFixed(1)})`);
             }
             
             // Store all descriptions seen for this person
