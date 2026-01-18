@@ -1,7 +1,7 @@
 export class DescAnalyzer {
     constructor(config = {}) {
-        this.minMatchScoreNormal = config.minMatchScore || 5.5;
-        this.minMatchScoreLowLight = config.minMatchScoreLowLight || 6.5; // More forgiving in low-light
+        this.minMatchScoreNormal = config.minMatchScore || 6.5;
+        this.minMatchScoreLowLight = config.minMatchScoreLowLight || 5.5; // More forgiving in low-light
         this.lowLightMode = config.lowLightMode || false;
         
         // Stopwords to remove during tokenization
@@ -12,7 +12,8 @@ export class DescAnalyzer {
         // Modifiers that should be hyphenated with their base words
         this.colorModifiers = new Set(['dark', 'light', 'bright', 'pale', 'deep', 'vivid']);
         this.garmentModifiers = new Set(['puffer', 'puffy', 'hooded', 'denim', 'leather', 'baseball', 
-            'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short', 'fitted', 'loose', 'oversized']);
+            'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short', 'fitted', 'loose', 'oversized',
+            'long-sleeved', 'short-sleeved', 'capri']);
         
         // Build/size descriptors for low-light mode
         this.buildDescriptors = new Set(['tall', 'short', 'large', 'small', 'big', 'slim', 'thin', 
@@ -55,11 +56,6 @@ export class DescAnalyzer {
         this.colors = new Set(['white', 'black', 'gray', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown']);
         this.importantNouns = new Set(['jacket', 'shirt', 'pants', 'shorts', 'jeans', 'hoodie', 'bag', 'backpack', 'headphones', 'glasses', 'hat', 'hair', 'shoes']);
         this.accessories = new Set(['bag', 'backpack', 'headphones', 'glasses', 'hat', 'cap', 'beanie']);
-        
-        // Accessories that are RELIABLE indicators (penalize if mismatched)
-        this.reliableAccessories = new Set(['headphones', 'earbuds', 'glasses', 'sunglasses']);
-        // Unreliable accessories (AI hallucinates or is inconsistent) - don't penalize
-        this.unreliableAccessories = new Set(['backpack', 'bag', 'hat', 'cap', 'beanie', 'hood']);
         
         // Color families for fuzzy matching (normal mode)
         this.colorFamilies = {
@@ -175,9 +171,6 @@ export class DescAnalyzer {
         return word.includes('-') ? word.split('-') : [word];
     }
     
-    /**
-     * NORMAL MODE: Color-based matching with fuzzy color families
-     */
     matchScoreNormalMode(words1, words2, bigrams1, bigrams2) {
         let totalScore = 0;
         const breakdown = [];
@@ -211,7 +204,7 @@ export class DescAnalyzer {
         } else if (hasGender1 && hasGender2) {
             // Different genders = strong signal they're different people
             totalScore -= 3;
-            breakdown.push({ score: -3, type: 'gender-mismatch', phrase: 'different genders' });
+            breakdown.push({ score: -2, type: 'gender-mismatch', phrase: 'different genders' });
         }
         
         // Person match
@@ -235,108 +228,7 @@ export class DescAnalyzer {
         
         return { totalScore, breakdown };
     }
-    
-    /**
-     * LOW-LIGHT MODE: Shape and accessory-based matching, simplified colors
-     */
-    matchScoreLowLightMode(words1, words2, bigrams1, bigrams2) {
-        let totalScore = 0;
-        const breakdown = [];
-        
-        // Build/size match (high value in low-light)
-        const build1 = words1.find(w => this.buildDescriptors.has(w));
-        const build2 = words2.find(w => this.buildDescriptors.has(w));
-        if (build1 && build2 && build1 === build2) {
-            totalScore += 3;
-            breakdown.push({ score: 3, type: 'build-match', phrase: build1 });
-        }
-        
-        // Simplified color matching for low-light (light vs dark vs mid)
-        const getSimplifiedColorFamily = (words) => {
-            for (const word of words) {
-                if (this.isColorToken(word)) {
-                    const families = this.getColorFamily(word);
-                    // Prioritize dark/light distinctions
-                    if (families.includes('dark')) return 'dark';
-                    if (families.includes('light')) return 'light';
-                    if (families.includes('neutral')) return 'mid';
-                }
-            }
-            return null;
-        };
-        
-        const colorFamily1 = getSimplifiedColorFamily(words1);
-        const colorFamily2 = getSimplifiedColorFamily(words2);
-        
-        // Garment shape matching with simplified color consideration
-        const garments1 = words1.filter(w => this.importantNouns.has(w) || w.includes('-'));
-        const garments2 = words2.filter(w => this.importantNouns.has(w) || w.includes('-'));
-        
-        for (const g1 of garments1) {
-            for (const g2 of garments2) {
-                const norm1 = this.normalizeGarment(g1);
-                const norm2 = this.normalizeGarment(g2);
-                
-                if (norm1 === norm2) {
-                    // Base score for matching garment
-                    const isShaped = g1.includes('-') || g2.includes('-');
-                    let score = isShaped ? 2.5 : 2; // Shaped garments worth more
-                    
-                    // Bonus if color families also match
-                    if (colorFamily1 && colorFamily2) {
-                        if (colorFamily1 === colorFamily2) {
-                            score += 1; // Same color family + same garment = strong match
-                            breakdown.push({ score, type: 'garment-shape-color', phrase: `${g1}~${g2} (both ${colorFamily1})` });
-                        } else {
-                            // Different color families = penalty, likely different people
-                            score -= 1; // Reduce confidence if colors don't match
-                            breakdown.push({ score: Math.max(score, 0.5), type: 'garment-shape-diff-color', phrase: `${g1}~${g2} (${colorFamily1} vs ${colorFamily2})` });
-                        }
-                    } else {
-                        breakdown.push({ score, type: 'garment-shape', phrase: `${g1}~${g2}` });
-                    }
-                    
-                    totalScore += Math.max(score, 0.5); // Minimum 0.5 pts for garment match
-                    break;
-                }
-            }
-        }
-        
-        // Accessory matching (very reliable in silhouettes)
-        const acc1 = words1.filter(w => this.accessories.has(w));
-        const acc2 = words2.filter(w => this.accessories.has(w));
-        
-        for (const a of acc1) {
-            if (acc2.includes(a)) {
-                totalScore += 2.5;
-                breakdown.push({ score: 2.5, type: 'accessory', phrase: a });
-            }
-        }
-        
-        // Gender/person matching WITHOUT mismatch penalty (hard to see in low-light)
-        const hasGender1 = words1.includes('male') || words1.includes('female');
-        const hasGender2 = words2.includes('male') || words2.includes('female');
-        
-        if (words1.includes('male') && words2.includes('male')) {
-            totalScore += 2;
-            breakdown.push({ score: 2, type: 'gender', phrase: 'male' });
-        } else if (words1.includes('female') && words2.includes('female')) {
-            totalScore += 2;
-            breakdown.push({ score: 2, type: 'gender', phrase: 'female' });
-        } else if (hasGender1 && hasGender2) {
-            // Different genders = strong signal they're different people
-            totalScore -= 3;
-            breakdown.push({ score: -3, type: 'gender-mismatch', phrase: 'different genders' });
-        }
-        
-        if (words1.includes('person') && words2.includes('person')) {
-            totalScore += 1.5;
-            breakdown.push({ score: 1.5, type: 'ungendered', phrase: 'person' });
-        }
-        
-        return { totalScore, breakdown };
-    }
-    
+
     scoreBigramNormal(bg1, bg2) {
         if (bg1 === bg2) {
             const words = bg1.split(' ');
@@ -497,14 +389,9 @@ export class DescAnalyzer {
         let result;
         let threshold;
         
-        if (this.lowLightMode) {
-            result = this.matchScoreLowLightMode(words1, words2, bigrams1, bigrams2);
-            threshold = this.minMatchScoreLowLight;
-        } else {
-            result = this.matchScoreNormalMode(words1, words2, bigrams1, bigrams2);
-            threshold = this.minMatchScoreNormal;
-        }
-        
+        result = this.matchScoreNormalMode(words1, words2, bigrams1, bigrams2);
+        threshold = this.minMatchScoreNormal;
+
         return {
             score: result.totalScore,
             matched: result.totalScore >= threshold,
