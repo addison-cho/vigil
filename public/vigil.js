@@ -404,8 +404,8 @@ class Vigil {
             this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
             // this.addLog(`     Original: "${bestMatch.description}"`);
             this.addLog(`"${newPerson.description}"`);
-            // this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
-            
+            this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
+            // over here
             // Time-based alerts
             const thresholds = this.config.alertThresholds;
             const prevDuration = count > 1 ? this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]) : 0;
