@@ -1,4 +1,5 @@
 import { RealtimeVision } from 'https://esm.sh/@overshoot/sdk';
+import { DescAnalyzer } from './language.js';
 
 class Vigil {
     constructor() {
@@ -8,25 +9,37 @@ class Vigil {
         this.vision = null;
         this.totalDetections = 0;
 
+        this.analyzer = new DescAnalyzer({ minMatchScore: 6 });
+
+        // ai-generated config
+        this.config = {
+            alertThresholds: {
+                awareness: 60,
+                caution: 120,
+                alert: 300
+            }
+        };
+
         this.initUI();
     }
 
     // UI was AI-generated
     async initUI() {
         try {
-        // Load available videos
-        const response = await fetch('/api/videos');
-        const videos = await response.json();
-        console.log('Loaded videos:', videos);
-        
-        const select = document.getElementById('videoSelect');
-        videos.forEach(video => {
-            console.log('Adding option:', video.name);
-            const option = document.createElement('option');
-            option.value = video.path;
-            option.textContent = video.name;
-            select.appendChild(option);
-        }); }
+            // Load available videos
+            const response = await fetch('/api/videos');
+            const videos = await response.json();
+            console.log('Loaded videos:', videos);
+            
+            const select = document.getElementById('videoSelect');
+            videos.forEach(video => {
+                console.log('Adding option:', video.name);
+                const option = document.createElement('option');
+                option.value = video.path;
+                option.textContent = video.name;
+                select.appendChild(option);
+            });
+        }
         catch (error) {
             console.error('Error loading videos:', error);
             // Add a fallback option for testing
@@ -80,22 +93,30 @@ class Vigil {
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
-            prompt: `Return a JSON object with:
+            prompt: `Describe ONLY people visible. Return JSON:
                 {
-                    "people": [
-                    {
-                        "distance": "close/medium/far",
-                        "description": "brief description of clothing, height, build",
-                        "notable_features": "any distinctive characteristics"
-                    }
-                    ],
-                    "count": number of people visible behind the camera perspective
+                    "people": [{
+                        "description": "gender, upper clothing, lower clothing, accessories"
+                    }],
+                    "count": number
                 }
-                Return only valid JSON, no other text.`,
+
+                Format rules:
+                - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
+                - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
+                - Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
+                - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
+                - ALWAYS describe both upper AND lower body clothing
+                - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
+                - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
+
+                Examples:
+                "male, dark green puffer jacket, black pants, backpack"
+                "female, red hoodie, blue jeans, headphones"`,
             source: { type: 'video', file: file },
             processing: {
-                clip_length_seconds: 3,
-                delay_seconds: 2,
+                clip_length_seconds: 1,
+                delay_seconds: 1,
                 fps: 15,
                 sampling_ratio: 0.2
             },
@@ -118,10 +139,18 @@ class Vigil {
         document.getElementById('startBtn').disabled = false;
         document.getElementById('stopBtn').disabled = true;
         document.getElementById('videoPlayer').pause();
+
+        this.generateEndReport();
     }
 
     handleDetection(result) {
         try {
+            // Check if result exists and has content
+            if (!result.result || result.result.trim() === '') {
+                console.warn("Received empty result, skipping...");
+                return;
+            }
+
             const data = JSON.parse(result.result);
             const timestamp = new Date().toISOString();
 
@@ -138,65 +167,90 @@ class Vigil {
         catch (e) {
             console.error("Error parsing JSON:", e);
             console.log("Raw result:", result.result);
-        }
+            console.log("Attempted to parse:", result.result.substring(0, 200));
+            console.log("Skipping this frame and continuing...");        }
     }
 
     trackPerson(newPerson, timestamp) {
-        const match = this.personHistory.find(p => this.isSimilarPerson(p, newPerson));
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        for (const existingPerson of this.personHistory) {
+            const matchResult = this.analyzer.matchScore(
+                existingPerson.description, 
+                newPerson.description
+            );
+            
+            if (matchResult.matched && matchResult.score > bestScore) {
+                bestMatch = existingPerson;
+                bestScore = matchResult.score;
+            }
+        }
 
-        if (match) {
-            // if person has already been seen before
-            match.timestamps.push(timestamp);
-            match.lastSeen = timestamp;
-            match.distance = newPerson.distance;
+        if (bestMatch) {
+            bestMatch.timestamps.push(timestamp);
+            bestMatch.lastSeen = timestamp;
             
-            const count = match.timestamps.length;
-            this.addLog(`  ↻ Recurring person (seen ${count}x): ${match.description}`);
+            // Store all descriptions seen for this person
+            if (!bestMatch.allDescriptions) {
+                bestMatch.allDescriptions = [bestMatch.description];
+            }
+            if (!bestMatch.allDescriptions.includes(newPerson.description)) {
+                bestMatch.allDescriptions.push(newPerson.description);
+            }
             
-            // Alert thresholds
-            if (count === 5) {
-                this.addLog(`  ⚠️  AWARENESS: Same person detected 5 times`);
-            } else if (count === 15) {
-                this.addLog(`  🔶 CAUTION: Same person detected 15 times`);
-            } else if (count === 30) {
-                this.addLog(`  🚨 ALERT: Same person detected 30 times!`);
-                this.addLog(`     First seen: ${match.firstSeen}`);
-                this.addLog(`     Duration: ${this.getTimeDuration(match.firstSeen, match.lastSeen)}`);
+            const durationSeconds = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.lastSeen);
+            const count = bestMatch.timestamps.length;
+            
+            // Get detailed match breakdown
+            const matchResult = this.analyzer.matchScore(bestMatch.description, newPerson.description);
+            const breakdownStr = this.analyzer.formatBreakdown(matchResult.breakdown);
+            
+            this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
+            this.addLog(`     Original: "${bestMatch.description}"`);
+            this.addLog(`     Current:  "${newPerson.description}"`);
+            this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
+            
+            // Time-based alerts
+            const thresholds = this.config.alertThresholds;
+            const prevDuration = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]);
+            
+            if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
+                this.addLog(`  ⚠️  AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.alertCount++;
+            } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
+                this.addLog(`  🔶 CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.alertCount++;
+            } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
+                this.addLog(`  🚨 ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
+                this.addLog(`     First seen: ${new Date(bestMatch.firstSeen).toLocaleTimeString()}`);
+                this.alertCount++;
             }
         }
         else {
-
-        const personRecord = {
-            description: newPerson.description,
-                notable_features: newPerson.notable_features || "none",
-                distance: newPerson.distance,
+            const personRecord = {
+                description: newPerson.description,
                 timestamps: [timestamp],
                 firstSeen: timestamp,
-                lastSeen: timestamp
+                lastSeen: timestamp,
+                allDescriptions: [newPerson.description]
             };
-            
-        this.personHistory.push(personRecord);
-        this.addLog(`  + New person tracked: ${newPerson.description}`);
+                
+            this.personHistory.push(personRecord);
+            this.addLog(`  + New person tracked: ${newPerson.description}`);
         }
     }
 
-    // fix later; get rid of words like "the", "and", etc.
     isSimilarPerson(p1, p2) {
-        const features1 = (p1.description || '') + ' ' + (p1.notable_features || '');
-        const features2 = (p2.description || '') + ' ' + (p2.notable_features || '');
-        
-        const words1 = features1.toLowerCase().split(' ').filter(w => w.length > 2);
-        const words2 = features2.toLowerCase().split(' ').filter(w => w.length > 2);
-
-        const commonWords = words1.filter(word => words2.includes(word));
-        return commonWords.length >= 3;
+        return (this.analyzer.matchScore(p1.description, p2.description) > 7);
     }
 
-    getTimeDuration(start, end) {
-        const diff = new Date(end) - new Date(start);
-        const seconds = Math.floor(diff / 1000);
+    getTimeDurationSeconds(start, end) {
+        return Math.floor((new Date(end) - new Date(start)) / 1000);
+    }
+
+    formatDuration(seconds) {
         const minutes = Math.floor(seconds / 60);
-        
         if (minutes > 0) {
             return `${minutes}m ${seconds % 60}s`;
         }
@@ -209,7 +263,53 @@ class Vigil {
         document.getElementById('alerts').textContent = this.alertCount;
     }
 
-    // claude revised previous code for "clean-up"
+    generateEndReport() {
+        console.log("\n========== VIGIL SESSION REPORT ==========");
+        console.log(`Total unique people tracked: ${this.personHistory.length}`);
+        console.log(`Total detections: ${this.totalDetections}`);
+        console.log(`Alerts triggered: ${this.alertCount}`);
+        console.log("\n--- UNIQUE PEOPLE DETECTED ---\n");
+        
+        // Sort by duration (longest first)
+        const sortedPeople = [...this.personHistory].sort((a, b) => {
+            const durationA = this.getTimeDurationSeconds(a.firstSeen, a.lastSeen);
+            const durationB = this.getTimeDurationSeconds(b.firstSeen, b.lastSeen);
+            return durationB - durationA;
+        });
+        
+        sortedPeople.forEach((person, index) => {
+            const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
+            const detectionCount = person.timestamps.length;
+            
+            console.log(`Person #${index + 1}:`);
+            console.log(`  Primary description: "${person.description}"`);
+            
+            if (person.allDescriptions && person.allDescriptions.length > 1) {
+                console.log(`  All descriptions seen:`);
+                person.allDescriptions.forEach(desc => {
+                    console.log(`    - "${desc}"`);
+                });
+            }
+            
+            console.log(`  Detected ${detectionCount} times over ${this.formatDuration(duration)}`);
+            console.log(`  First seen: ${new Date(person.firstSeen).toLocaleTimeString()}`);
+            console.log(`  Last seen: ${new Date(person.lastSeen).toLocaleTimeString()}`);
+            console.log("");
+        });
+        
+        console.log("==========================================\n");
+        
+        // Also add to UI
+        this.addLog(`\n========== SESSION COMPLETE ==========`, 'report');
+        this.addLog(`${this.personHistory.length} unique people | ${this.totalDetections} total detections | ${this.alertCount} alerts`, 'report');
+        
+        sortedPeople.forEach((person, index) => {
+            const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
+            const detectionCount = person.timestamps.length;
+            this.addLog(`Person #${index + 1}: "${person.description}" (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
+        });
+    }
+    
     addLog(message, type = 'normal') {
         const feed = document.getElementById('detectionFeed');
         const item = document.createElement('div');
