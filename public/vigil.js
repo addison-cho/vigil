@@ -11,15 +11,15 @@ class Vigil {
 
         // Initialize the compound matcher
         this.analyzer = new DescAnalyzer({
-            minMatchScore: 5
+            minMatchScore: 5.5
         });
 
         // ai-generated config
         this.config = {
             alertThresholds: {
-                awareness: 60,
-                caution: 120,
-                alert: 300
+                awareness: 15,
+                caution: 30,
+                alert: 60
             }
         };
 
@@ -65,59 +65,44 @@ class Vigil {
         document.getElementById('stopBtn').addEventListener('click', () => this.stop());
         
         // Low-light mode toggle
-        const lowLightToggle = document.getElementById('lowLightToggle');
-        if (lowLightToggle) {
-            lowLightToggle.addEventListener('change', (e) => {
-                this.analyzer.setLowLightMode(e.target.checked);
-                this.addLog(`${e.target.checked ? '🌙 Low-light mode: Focusing on build/shape/accessories' : '☀️ Normal mode: Focusing on colors/garments'}`, 'system');
-            });
-        }
+        // const lowLightToggle = document.getElementById('lowLightToggle');
+        // if (lowLightToggle) {
+        //     lowLightToggle.addEventListener('change', (e) => {
+        //         this.analyzer.setLowLightMode(e.target.checked);
+        //         this.addLog(`${e.target.checked ? '🌙 Low-light mode: Focusing on build/shape/accessories' : '☀️ Normal mode: Focusing on colors/garments'}`, 'system');
+        //     });
+        // }
     }
 
-    getPromptForMode() {
-        if (this.analyzer.lowLightMode) {
-            // LOW-LIGHT MODE: Focus on silhouettes + basic light/dark colors
-            return `Describe ONLY people visible in this low-light/nighttime footage. Return JSON:
-{
-    "people": [{
-        "description": "build, overall color tone, garment shapes, accessories"
-    }],
-    "count": number
-}
-
-IMPORTANT - Low-light conditions:
-- Build: "tall", "short", "large build", "small build", "medium build"
-- Overall color: Use ONLY "light colored" OR "dark colored" for clothing (don't try to identify specific colors like blue/green)
-- Garment SHAPES: "puffy coat", "fitted jacket", "long coat", "loose hoodie", "baggy pants"
-- Accessories: "backpack", "bag", "headphones", "hat", "cap"
-
-Examples:
-✓ {"people": [{"description": "tall, dark colored puffy coat, backpack"}], "count": 1}
-✓ {"people": [{"description": "small build, light colored long coat, headphones"}], "count": 1}
-✓ {"people": [{"description": "medium build, dark colored fitted jacket, dark pants"}], "count": 1}`;
-        } else {
-            // NORMAL MODE: Colors and details
-            return `Describe ONLY people visible. Return JSON:
-{
-    "people": [{
-        "description": "gender, upper clothing, lower clothing, accessories"
-    }],
-    "count": number
-}
-
-Format rules:
-- Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
-- Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
-- Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
-- Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
-- ALWAYS describe both upper AND lower body clothing
-- Order: always COLOR before GARMENT ("black jacket" never "jacket black")
-- Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
-
-Examples:
-✓ {"people": [{"description": "male, dark green puffer jacket, black pants, backpack"}], "count": 1}
-✓ {"people": [{"description": "female, red hoodie, blue jeans, headphones"}], "count": 1}`;
+    getPrompt() {
+        return `Describe ONLY people visible. Return JSON:
+        {
+            "people": [{
+                "description": "gender, upper clothing, lower clothing, accessories"
+            }],
+            "count": number
         }
+        
+        Do NOT write "child". It is NOT a substitute for gender.
+        
+        CRITICAL Color rules:
+        - ALWAYS identify specific colors, even if dark/dim: "dark green", "dark blue", "dark gray", "navy", etc.
+        - NEVER use just "dark" or "light" alone - always include the actual color
+        - In extreme uncertainty, you can use "dark"
+        - Common colors in dim light: dark green, dark blue, navy, charcoal, gray, brown, maroon
+
+        Format rules:
+        - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
+        - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
+        - Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
+        - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
+        - ALWAYS describe both upper AND lower body clothing
+        - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
+        - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
+
+        Examples:
+        {"people": [{"description": "male, dark green puffer jacket, black pants"}], "count": 1}
+        {"people": [{"description": "female, red hoodie, blue jeans, headphones"}], "count": 1}`;
     }
 
     async start() {
@@ -151,7 +136,7 @@ Examples:
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
-            prompt: this.getPromptForMode(),
+            prompt: this.getPrompt(),
             source: { type: 'video', file: file },
             processing: {
                 clip_length_seconds: 3,
@@ -242,7 +227,7 @@ Examples:
         let specificityScore = 0;
         
         // Specific colors (not just dark/light) add points
-        const specificColors = ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
+        const specificColors = ['black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
         for (const color of specificColors) {
             if (normalized.includes(color)) specificityScore += 2;
         }
@@ -259,12 +244,9 @@ Examples:
             if (normalized.includes(garment)) specificityScore += 1;
         }
         
-        // Build descriptors add points in low-light mode
-        if (this.analyzer.lowLightMode) {
-            const builds = ['tall', 'short', 'large', 'small', 'slim', 'stocky'];
-            for (const build of builds) {
-                if (normalized.includes(build)) specificityScore += 2;
-            }
+
+        if (normalized.includes('male') || normalized.includes('female')) {
+            specificityScore += 1;
         }
         
         return specificityScore;
@@ -320,24 +302,48 @@ Examples:
     }
 
     trackPerson(newPerson, timestamp) {
-        // Remove people not seen in 10 minutes (600 seconds)
-        const now = new Date(timestamp);
+        // CLEANUP: Remove people not seen in configured timeout (default 10 minutes)
+        const timeoutSeconds = this.config.removalTimeoutSeconds;
+        const currentTime = new Date(timestamp);
+        
+        const removedPeople = [];
         this.personHistory = this.personHistory.filter(person => {
             const lastSeenTime = new Date(person.lastSeen);
-            const secondsSinceLastSeen = (now - lastSeenTime) / 1000;
+            const secondsSinceLastSeen = (currentTime - lastSeenTime) / 1000;
             
-            if (secondsSinceLastSeen > 600) {
-                this.addLog(`  🕐 Removed from tracking (not seen for ${Math.floor(secondsSinceLastSeen / 60)}m): "${person.description}"`, 'system');
-                return false;
+            if (secondsSinceLastSeen > timeoutSeconds) {
+                const durationTracked = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
+                const detectionCount = person.timestamps.length;
+                
+                removedPeople.push({
+                    description: person.description,
+                    detectionCount,
+                    durationTracked,
+                    minutesSinceLastSeen: Math.floor(secondsSinceLastSeen / 60)
+                });
+                
+                return false; // Remove this person
             }
-            return true;
+            return true; // Keep this person
+        });
+        
+        // Log removed people
+        removedPeople.forEach(removed => {
+            this.addLog(
+                `  🕐 Removed from tracking (inactive ${removed.minutesSinceLastSeen}m): "${removed.description}" `
+            );
         });
         
         // Use the compound matcher to find similar person
         let bestMatch = null;
         let bestScore = 0;
+        let oldestMatch = null;
+        let oldestMatchScore = 0;
         
         for (const existingPerson of this.personHistory) {
+            // Skip silhouette entries when matching specific people
+            if (existingPerson.isSilhouette) continue;
+            
             const matchResult = this.analyzer.matchScore(
                 existingPerson.description, 
                 newPerson.description
@@ -347,11 +353,34 @@ Examples:
                 bestMatch = existingPerson;
                 bestScore = matchResult.score;
             }
+            
+            // Track the oldest matching person (person with earliest firstSeen)
+            if (matchResult.matched && (!oldestMatch || new Date(existingPerson.firstSeen) < new Date(oldestMatch.firstSeen))) {
+                oldestMatch = existingPerson;
+                oldestMatchScore = matchResult.score;
+            }
         }
 
         if (bestMatch) {
+            // Update both timestamps and lastSeen for the matched person
             bestMatch.timestamps.push(timestamp);
             bestMatch.lastSeen = timestamp;
+            
+            // If the oldest match is different from best match, also update it
+            if (oldestMatch && oldestMatch !== bestMatch) {
+                oldestMatch.timestamps.push(timestamp);
+                oldestMatch.lastSeen = timestamp;
+                
+                // Store description for oldest match too
+                if (!oldestMatch.allDescriptions) {
+                    oldestMatch.allDescriptions = [oldestMatch.description];
+                }
+                if (!oldestMatch.allDescriptions.includes(newPerson.description)) {
+                    oldestMatch.allDescriptions.push(newPerson.description);
+                }
+                
+                // this.addLog(`  ⏰ Also matched to oldest tracked person: "${oldestMatch.description}" (score=${oldestMatchScore.toFixed(1)})`);
+            }
             
             // Store all descriptions seen for this person
             if (!bestMatch.allDescriptions) {
@@ -369,13 +398,13 @@ Examples:
             const breakdownStr = this.analyzer.formatBreakdown(matchResult.breakdown);
             
             this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
-            this.addLog(`     Original: "${bestMatch.description}"`);
-            this.addLog(`     Current:  "${newPerson.description}"`);
+            // this.addLog(`     Original: "${bestMatch.description}"`);
+            this.addLog(`"${newPerson.description}"`);
             this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
             
             // Time-based alerts
             const thresholds = this.config.alertThresholds;
-            const prevDuration = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]);
+            const prevDuration = count > 1 ? this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]) : 0;
             
             if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
                 this.addLog(`  ⚠️  AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);

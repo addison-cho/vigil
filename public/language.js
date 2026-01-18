@@ -1,7 +1,7 @@
 export class DescAnalyzer {
     constructor(config = {}) {
-        this.minMatchScoreNormal = config.minMatchScore || 6.5;
-        this.minMatchScoreLowLight = config.minMatchScoreLowLight || 5.5; // More forgiving in low-light
+        this.minMatchScoreNormal = config.minMatchScore || 7;
+        // this.minMatchScoreLowLight = config.minMatchScoreLowLight || 5.5; // More forgiving in low-light
         this.lowLightMode = config.lowLightMode || false;
         
         // Stopwords to remove during tokenization
@@ -13,7 +13,7 @@ export class DescAnalyzer {
         this.colorModifiers = new Set(['dark', 'light', 'bright', 'pale', 'deep', 'vivid']);
         this.garmentModifiers = new Set(['puffer', 'puffy', 'hooded', 'denim', 'leather', 'baseball', 
             'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short', 'fitted', 'loose', 'oversized',
-            'long-sleeved', 'short-sleeved', 'capri', 'long-sleeve', 'short-sleeve']);
+            'long-sleeved', 'short-sleeved', 'capri', 'long-sleeve', 'short-sleeve', 'patterned']);
         
         // Build/size descriptors for low-light mode
         this.buildDescriptors = new Set(['tall', 'short', 'large', 'small', 'big', 'slim', 'thin', 
@@ -207,10 +207,10 @@ export class DescAnalyzer {
             breakdown.push({ score: -2, type: 'gender-mismatch', phrase: 'different genders' });
         }
 
-        if (words.includes('child') && words2.includes('child')) {
-            totalScore += 2;
-            breakdown.push({ score: 2, type: 'age-group', phrase: 'child' });
-        }
+        // if (words1.includes('child') && words2.includes('child')) {
+        //     totalScore += 2;
+        //     breakdown.push({ score: 2, type: 'age-group', phrase: 'child' });
+        // }
         
         // Person match
         if (words1.includes('person') && words2.includes('person')) {
