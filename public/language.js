@@ -13,7 +13,7 @@ export class DescAnalyzer {
         this.colorModifiers = new Set(['dark', 'light', 'bright', 'pale', 'deep', 'vivid']);
         this.garmentModifiers = new Set(['puffer', 'puffy', 'hooded', 'denim', 'leather', 'baseball', 
             'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short', 'fitted', 'loose', 'oversized',
-            'long-sleeved', 'short-sleeved', 'capri']);
+            'long-sleeved', 'short-sleeved', 'capri', 'long-sleeve', 'short-sleeve']);
         
         // Build/size descriptors for low-light mode
         this.buildDescriptors = new Set(['tall', 'short', 'large', 'small', 'big', 'slim', 'thin', 
@@ -205,6 +205,11 @@ export class DescAnalyzer {
             // Different genders = strong signal they're different people
             totalScore -= 3;
             breakdown.push({ score: -2, type: 'gender-mismatch', phrase: 'different genders' });
+        }
+
+        if (words.includes('child') && words2.includes('child')) {
+            totalScore += 2;
+            breakdown.push({ score: 2, type: 'age-group', phrase: 'child' });
         }
         
         // Person match

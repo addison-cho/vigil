@@ -214,7 +214,15 @@ Examples:
                 this.totalDetections++;
 
                 data.people.forEach((person) => {
-                    this.trackPerson(person, timestamp);
+                    // Check if description is too vague to be useful
+                    const specificityScore = this.getDescriptionSpecificity(person.description);
+                    
+                    if (specificityScore < 2) {
+                        // Track as generic silhouette instead
+                        this.trackSilhouette(person, timestamp);
+                    } else {
+                        this.trackPerson(person, timestamp);
+                    }
                 });
 
                 this.updateStats();
@@ -228,8 +236,103 @@ Examples:
             // Don't crash - just skip this bad result and continue
         }
     }
+    
+    getDescriptionSpecificity(description) {
+        const normalized = description.toLowerCase();
+        let specificityScore = 0;
+        
+        // Specific colors (not just dark/light) add points
+        const specificColors = ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
+        for (const color of specificColors) {
+            if (normalized.includes(color)) specificityScore += 2;
+        }
+        
+        // Accessories add points (very distinctive)
+        const accessories = ['backpack', 'bag', 'headphones', 'glasses', 'hat', 'cap', 'beanie'];
+        for (const accessory of accessories) {
+            if (normalized.includes(accessory)) specificityScore += 3;
+        }
+        
+        // Specific garment types add points
+        const specificGarments = ['puffer', 'puffy', 'hoodie', 'sweater', 'jeans', 'shorts'];
+        for (const garment of specificGarments) {
+            if (normalized.includes(garment)) specificityScore += 1;
+        }
+        
+        // Build descriptors add points in low-light mode
+        if (this.analyzer.lowLightMode) {
+            const builds = ['tall', 'short', 'large', 'small', 'slim', 'stocky'];
+            for (const build of builds) {
+                if (normalized.includes(build)) specificityScore += 2;
+            }
+        }
+        
+        return specificityScore;
+    }
+    
+    trackSilhouette(newPerson, timestamp) {
+        // Find or create the generic silhouette tracker
+        let silhouette = this.personHistory.find(p => p.isSilhouette);
+        
+        if (!silhouette) {
+            silhouette = {
+                description: "👤 Unidentifiable silhouette/figure",
+                isSilhouette: true,
+                timestamps: [],
+                firstSeen: timestamp,
+                lastSeen: timestamp,
+                allDescriptions: [],
+                vagueDescriptions: []
+            };
+            this.personHistory.push(silhouette);
+            this.addLog(`  👤 Created silhouette tracker for vague detections`);
+        }
+        
+        // Update silhouette tracking
+        silhouette.timestamps.push(timestamp);
+        silhouette.lastSeen = timestamp;
+        
+        // Store the vague description
+        if (!silhouette.vagueDescriptions.includes(newPerson.description)) {
+            silhouette.vagueDescriptions.push(newPerson.description);
+        }
+        
+        const durationSeconds = this.getTimeDurationSeconds(silhouette.firstSeen, silhouette.lastSeen);
+        const count = silhouette.timestamps.length;
+        
+        this.addLog(`  👤 Silhouette detected (${count}x, ${this.formatDuration(durationSeconds)}): "${newPerson.description}"`);
+        
+        // Time-based alerts for silhouette
+        const thresholds = this.config.alertThresholds;
+        const prevDuration = count > 1 ? this.getTimeDurationSeconds(silhouette.firstSeen, silhouette.timestamps[silhouette.timestamps.length - 2]) : 0;
+        
+        if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
+            this.addLog(`  ⚠️  AWARENESS: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}`);
+            this.alertCount++;
+        } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
+            this.addLog(`  🔶 CAUTION: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}`);
+            this.alertCount++;
+        } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
+            this.addLog(`  🚨 ALERT: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}!`);
+            this.addLog(`     First seen: ${new Date(silhouette.firstSeen).toLocaleTimeString()}`);
+            this.alertCount++;
+        }
+    }
 
     trackPerson(newPerson, timestamp) {
+        // Remove people not seen in 10 minutes (600 seconds)
+        const now = new Date(timestamp);
+        this.personHistory = this.personHistory.filter(person => {
+            const lastSeenTime = new Date(person.lastSeen);
+            const secondsSinceLastSeen = (now - lastSeenTime) / 1000;
+            
+            if (secondsSinceLastSeen > 600) {
+                this.addLog(`  🕐 Removed from tracking (not seen for ${Math.floor(secondsSinceLastSeen / 60)}m): "${person.description}"`, 'system');
+                return false;
+            }
+            return true;
+        });
+        
         // Use the compound matcher to find similar person
         let bestMatch = null;
         let bestScore = 0;
@@ -339,7 +442,12 @@ Examples:
             console.log(`Person #${index + 1}:`);
             console.log(`  Primary description: "${person.description}"`);
             
-            if (person.allDescriptions && person.allDescriptions.length > 1) {
+            if (person.isSilhouette && person.vagueDescriptions && person.vagueDescriptions.length > 0) {
+                console.log(`  Vague descriptions captured:`);
+                person.vagueDescriptions.forEach(desc => {
+                    console.log(`    - "${desc}"`);
+                });
+            } else if (person.allDescriptions && person.allDescriptions.length > 1) {
                 console.log(`  All descriptions seen:`);
                 person.allDescriptions.forEach(desc => {
                     console.log(`    - "${desc}"`);
@@ -361,7 +469,8 @@ Examples:
         sortedPeople.forEach((person, index) => {
             const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
             const detectionCount = person.timestamps.length;
-            this.addLog(`Person #${index + 1}: "${person.description}" (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
+            const label = person.isSilhouette ? ' [SILHOUETTE]' : '';
+            this.addLog(`Person #${index + 1}: "${person.description}"${label} (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
         });
     }
 
