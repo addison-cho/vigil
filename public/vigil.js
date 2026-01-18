@@ -11,7 +11,7 @@ class Vigil {
 
         // Initialize the compound matcher
         this.analyzer = new DescAnalyzer({
-            minMatchScore: 5.5
+            minMatchScore: 5
         });
 
         // ai-generated config
@@ -140,7 +140,7 @@ class Vigil {
             source: { type: 'video', file: file },
             processing: {
                 clip_length_seconds: 3,
-                delay_seconds: 2,
+                delay_seconds: 3,
                 fps: 15,
                 sampling_ratio: 0.2
             },
@@ -338,7 +338,7 @@ class Vigil {
         let bestMatch = null;
         let bestScore = 0;
         let oldestMatch = null;
-        let oldestMatchScore = 0;
+        // let oldestMatchScore = 0;
         
         for (const existingPerson of this.personHistory) {
             // Skip silhouette entries when matching specific people
@@ -400,7 +400,7 @@ class Vigil {
             this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
             // this.addLog(`     Original: "${bestMatch.description}"`);
             this.addLog(`"${newPerson.description}"`);
-            this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
+            // this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
             
             // Time-based alerts
             const thresholds = this.config.alertThresholds;
