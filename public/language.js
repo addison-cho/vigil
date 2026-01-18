@@ -1,6 +1,8 @@
 export class DescAnalyzer {
     constructor(config = {}) {
-        this.minMatchScore = config.minMatchScore || 5;
+        this.minMatchScoreNormal = config.minMatchScore || 5.5;
+        this.minMatchScoreLowLight = config.minMatchScoreLowLight || 6.5; // More forgiving in low-light
+        this.lowLightMode = config.lowLightMode || false;
         
         // Stopwords to remove during tokenization
         this.stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -9,8 +11,12 @@ export class DescAnalyzer {
         
         // Modifiers that should be hyphenated with their base words
         this.colorModifiers = new Set(['dark', 'light', 'bright', 'pale', 'deep', 'vivid']);
-        this.garmentModifiers = new Set(['puffer', 'hooded', 'denim', 'leather', 'baseball', 
-            'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short']);
+        this.garmentModifiers = new Set(['puffer', 'puffy', 'hooded', 'denim', 'leather', 'baseball', 
+            'running', 'cargo', 'skinny', 'zip', 'button', 'long', 'short', 'fitted', 'loose', 'oversized']);
+        
+        // Build/size descriptors for low-light mode
+        this.buildDescriptors = new Set(['tall', 'short', 'large', 'small', 'big', 'slim', 'thin', 
+            'stocky', 'heavy', 'petite', 'medium', 'average']);
         
         // Synonym groups for normalization
         this.synonymGroups = {
@@ -18,7 +24,7 @@ export class DescAnalyzer {
             'white': ['white', 'light-colored', 'light', 'pale', 'cream', 'off-white', 'ivory', 'beige'],
             'gray': ['gray', 'grey', 'charcoal', 'silver'],
             // Colors - dark
-            'black': ['black', 'dark-colored', 'dark'], // Added standalone "dark"
+            'black': ['black', 'dark-colored', 'dark', 'unclear', 'unknown'],
             'brown': ['brown', 'tan', 'khaki'],
             // Colors - bright
             'red': ['red', 'crimson', 'maroon', 'burgundy'],
@@ -37,15 +43,27 @@ export class DescAnalyzer {
             'pants': ['pants', 'trousers', 'jeans', 'slacks', 'leggings'],
             'shorts': ['shorts'],
             'skirt': ['skirt', 'dress'],
+            
+            // Garment shapes (for low-light mode)
+            'puffy': ['puffer', 'puffy', 'padded', 'quilted'],
+            'fitted': ['fitted', 'tight', 'slim'],
+            'loose': ['loose', 'baggy', 'oversized'],
+            'long': ['long', 'full-length', 'maxi'],
         };
         
         // Important semantic categories for weighted matching
         this.colors = new Set(['white', 'black', 'gray', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown']);
         this.importantNouns = new Set(['jacket', 'shirt', 'pants', 'shorts', 'jeans', 'hoodie', 'bag', 'backpack', 'headphones', 'glasses', 'hat', 'hair', 'shoes']);
+        this.accessories = new Set(['bag', 'backpack', 'headphones', 'glasses', 'hat', 'cap', 'beanie']);
         
-        // Color families for fuzzy matching
+        // Accessories that are RELIABLE indicators (penalize if mismatched)
+        this.reliableAccessories = new Set(['headphones', 'earbuds', 'glasses', 'sunglasses']);
+        // Unreliable accessories (AI hallucinates or is inconsistent) - don't penalize
+        this.unreliableAccessories = new Set(['backpack', 'bag', 'hat', 'cap', 'beanie', 'hood']);
+        
+        // Color families for fuzzy matching (normal mode)
         this.colorFamilies = {
-            'dark': ['black', 'dark', 'charcoal', 'navy', 'dark-blue', 'dark-green', 'dark-brown', 'dark-purple', 'dark-gray', 'dark-red'],
+            'dark': ['black', 'dark', 'charcoal', 'navy', 'dark-blue', 'dark-green', 'dark-brown', 'dark-purple', 'dark-gray', 'dark-red', 'unclear', 'unknown'],
             'light': ['white', 'light', 'pale', 'cream', 'beige', 'light-blue', 'light-green', 'light-gray', 'silver', 'ivory'],
             'warm': ['red', 'orange', 'yellow', 'pink', 'burgundy', 'maroon'],
             'cool': ['blue', 'green', 'purple', 'teal', 'turquoise'],
@@ -55,7 +73,6 @@ export class DescAnalyzer {
     
     /**
      * Preprocess text to create compound tokens
-     * "dark green puffer jacket" → "dark-green puffer-jacket"
      */
     preprocessText(text) {
         const words = text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
@@ -66,7 +83,6 @@ export class DescAnalyzer {
             const current = words[i];
             const next = words[i + 1];
             
-            // Check if current word is a modifier that should be compounded
             if (next) {
                 // Color modifier + color: "dark green" → "dark-green"
                 if (this.colorModifiers.has(current) && this.isColor(next)) {
@@ -75,11 +91,9 @@ export class DescAnalyzer {
                     continue;
                 }
                 
-                // Color modifier + garment: "dark jacket" → treat as "dark-colored jacket"
-                // This handles AI saying "dark jacket" instead of "dark blue jacket"
+                // Color modifier + garment: "dark jacket" → keep separate but mark as color
                 if (this.colorModifiers.has(current) && this.isGarment(next)) {
-                    // Don't compound, but mark "dark" as a color token
-                    processed.push(current); // "dark" will be treated as a dark-family color
+                    processed.push(current);
                     processed.push(next);
                     i += 2;
                     continue;
@@ -93,7 +107,6 @@ export class DescAnalyzer {
                 }
             }
             
-            // No compound formed, add word as-is
             processed.push(current);
             i++;
         }
@@ -101,27 +114,16 @@ export class DescAnalyzer {
         return processed.join(' ');
     }
     
-    /**
-     * Check if a word (or its synonym) is a color
-     */
     isColor(word) {
         if (this.colors.has(word)) return true;
-        
-        // Check if it's a synonym of a color
         for (const [canonical, synonyms] of Object.entries(this.synonymGroups)) {
-            if (this.colors.has(canonical) && synonyms.includes(word)) {
-                return true;
-            }
+            if (this.colors.has(canonical) && synonyms.includes(word)) return true;
         }
         return false;
     }
     
-    /**
-     * Check if a word (or its synonym) is a garment
-     */
     isGarment(word) {
         const garmentCategories = ['jacket', 'shirt', 'pants', 'shorts', 'skirt'];
-        
         for (const category of garmentCategories) {
             if (this.synonymGroups[category] && this.synonymGroups[category].includes(word)) {
                 return true;
@@ -130,57 +132,37 @@ export class DescAnalyzer {
         return false;
     }
     
-    /**
-     * Tokenize text: remove stopwords, filter short words, normalize synonyms
-     */
     tokenize(text) {
-        // First preprocess to create compounds
         const preprocessed = this.preprocessText(text);
-        
         return preprocessed
             .split(/\s+/)
             .filter(w => w.length > 2 && !this.stopwords.has(w))
             .map(w => this.normalizeSynonym(w));
     }
     
-    /**
-     * Normalize a word to its canonical synonym form
-     * Handles both simple words and compound words
-     */
     normalizeSynonym(word) {
-        // First check if whole word is in synonym groups
         for (const [canonical, synonyms] of Object.entries(this.synonymGroups)) {
-            if (synonyms.includes(word)) {
-                return canonical;
-            }
+            if (synonyms.includes(word)) return canonical;
         }
         
-        // If it's a compound (has hyphen), normalize components
         if (word.includes('-')) {
             const parts = word.split('-');
             const normalized = parts.map(part => {
                 for (const [canonical, synonyms] of Object.entries(this.synonymGroups)) {
-                    if (synonyms.includes(part)) {
-                        return canonical;
-                    }
+                    if (synonyms.includes(part)) return canonical;
                 }
                 return part;
             });
             
-            // If both parts normalized to same thing (e.g., "hooded-jacket" → "jacket-jacket"), collapse
             if (normalized.length === 2 && normalized[0] === normalized[1]) {
                 return normalized[0];
             }
-            
             return normalized.join('-');
         }
         
         return word;
     }
     
-    /**
-     * Generate bigrams from word array
-     */
     generateBigrams(words) {
         const bigrams = [];
         for (let i = 0; i < words.length - 1; i++) {
@@ -189,32 +171,179 @@ export class DescAnalyzer {
         return bigrams;
     }
     
-    /**
-     * Decompose a compound word into its components
-     * "dark-green" → ["dark", "green"]
-     */
     decomposeCompound(word) {
-        if (word.includes('-')) {
-            return word.split('-');
-        }
-        return [word];
+        return word.includes('-') ? word.split('-') : [word];
     }
     
     /**
-     * Calculate match score between two bigrams, including partial compound matches
+     * NORMAL MODE: Color-based matching with fuzzy color families
      */
-    scoreBigramMatch(bg1, bg2) {
-        // Exact match
+    matchScoreNormalMode(words1, words2, bigrams1, bigrams2) {
+        let totalScore = 0;
+        const breakdown = [];
+        const matchedBigrams = new Set();
+        
+        // Bigram matching with color families
+        for (const bg1 of bigrams1) {
+            for (const bg2 of bigrams2) {
+                if (matchedBigrams.has(bg2)) continue;
+                
+                const match = this.scoreBigramNormal(bg1, bg2);
+                if (match) {
+                    totalScore += match.score;
+                    breakdown.push(match);
+                    matchedBigrams.add(bg2);
+                    break;
+                }
+            }
+        }
+        
+        // Gender match with mismatch penalty
+        const hasGender1 = words1.includes('male') || words1.includes('female');
+        const hasGender2 = words2.includes('male') || words2.includes('female');
+        
+        if (words1.includes('male') && words2.includes('male')) {
+            totalScore += 2;
+            breakdown.push({ score: 2, type: 'gender', phrase: 'male' });
+        } else if (words1.includes('female') && words2.includes('female')) {
+            totalScore += 2;
+            breakdown.push({ score: 2, type: 'gender', phrase: 'female' });
+        } else if (hasGender1 && hasGender2) {
+            // Different genders = strong signal they're different people
+            totalScore -= 3;
+            breakdown.push({ score: -3, type: 'gender-mismatch', phrase: 'different genders' });
+        }
+        
+        // Person match
+        if (words1.includes('person') && words2.includes('person')) {
+            totalScore += 1.5;
+            breakdown.push({ score: 1.5, type: 'ungendered', phrase: 'person' });
+        }
+        
+        // Single clothing word matches
+        const alreadyMatched = new Set(
+            breakdown.flatMap(b => b.phrase.split(/[\s~]/).flatMap(w => w.split('-')))
+        );
+        
+        const clothingWords = ['jacket', 'shirt', 'pants', 'shorts', 'bag', 'backpack', 'headphones'];
+        for (const word of clothingWords) {
+            if (words1.includes(word) && words2.includes(word) && !alreadyMatched.has(word)) {
+                totalScore += 1;
+                breakdown.push({ score: 1, type: 'clothing-type', phrase: word });
+            }
+        }
+        
+        return { totalScore, breakdown };
+    }
+    
+    /**
+     * LOW-LIGHT MODE: Shape and accessory-based matching, simplified colors
+     */
+    matchScoreLowLightMode(words1, words2, bigrams1, bigrams2) {
+        let totalScore = 0;
+        const breakdown = [];
+        
+        // Build/size match (high value in low-light)
+        const build1 = words1.find(w => this.buildDescriptors.has(w));
+        const build2 = words2.find(w => this.buildDescriptors.has(w));
+        if (build1 && build2 && build1 === build2) {
+            totalScore += 3;
+            breakdown.push({ score: 3, type: 'build-match', phrase: build1 });
+        }
+        
+        // Simplified color matching for low-light (light vs dark vs mid)
+        const getSimplifiedColorFamily = (words) => {
+            for (const word of words) {
+                if (this.isColorToken(word)) {
+                    const families = this.getColorFamily(word);
+                    // Prioritize dark/light distinctions
+                    if (families.includes('dark')) return 'dark';
+                    if (families.includes('light')) return 'light';
+                    if (families.includes('neutral')) return 'mid';
+                }
+            }
+            return null;
+        };
+        
+        const colorFamily1 = getSimplifiedColorFamily(words1);
+        const colorFamily2 = getSimplifiedColorFamily(words2);
+        
+        // Garment shape matching with simplified color consideration
+        const garments1 = words1.filter(w => this.importantNouns.has(w) || w.includes('-'));
+        const garments2 = words2.filter(w => this.importantNouns.has(w) || w.includes('-'));
+        
+        for (const g1 of garments1) {
+            for (const g2 of garments2) {
+                const norm1 = this.normalizeGarment(g1);
+                const norm2 = this.normalizeGarment(g2);
+                
+                if (norm1 === norm2) {
+                    // Base score for matching garment
+                    const isShaped = g1.includes('-') || g2.includes('-');
+                    let score = isShaped ? 2.5 : 2; // Shaped garments worth more
+                    
+                    // Bonus if color families also match
+                    if (colorFamily1 && colorFamily2) {
+                        if (colorFamily1 === colorFamily2) {
+                            score += 1; // Same color family + same garment = strong match
+                            breakdown.push({ score, type: 'garment-shape-color', phrase: `${g1}~${g2} (both ${colorFamily1})` });
+                        } else {
+                            // Different color families = penalty, likely different people
+                            score -= 1; // Reduce confidence if colors don't match
+                            breakdown.push({ score: Math.max(score, 0.5), type: 'garment-shape-diff-color', phrase: `${g1}~${g2} (${colorFamily1} vs ${colorFamily2})` });
+                        }
+                    } else {
+                        breakdown.push({ score, type: 'garment-shape', phrase: `${g1}~${g2}` });
+                    }
+                    
+                    totalScore += Math.max(score, 0.5); // Minimum 0.5 pts for garment match
+                    break;
+                }
+            }
+        }
+        
+        // Accessory matching (very reliable in silhouettes)
+        const acc1 = words1.filter(w => this.accessories.has(w));
+        const acc2 = words2.filter(w => this.accessories.has(w));
+        
+        for (const a of acc1) {
+            if (acc2.includes(a)) {
+                totalScore += 2.5;
+                breakdown.push({ score: 2.5, type: 'accessory', phrase: a });
+            }
+        }
+        
+        // Gender/person matching WITHOUT mismatch penalty (hard to see in low-light)
+        const hasGender1 = words1.includes('male') || words1.includes('female');
+        const hasGender2 = words2.includes('male') || words2.includes('female');
+        
+        if (words1.includes('male') && words2.includes('male')) {
+            totalScore += 2;
+            breakdown.push({ score: 2, type: 'gender', phrase: 'male' });
+        } else if (words1.includes('female') && words2.includes('female')) {
+            totalScore += 2;
+            breakdown.push({ score: 2, type: 'gender', phrase: 'female' });
+        } else if (hasGender1 && hasGender2) {
+            // Different genders = strong signal they're different people
+            totalScore -= 3;
+            breakdown.push({ score: -3, type: 'gender-mismatch', phrase: 'different genders' });
+        }
+        
+        if (words1.includes('person') && words2.includes('person')) {
+            totalScore += 1.5;
+            breakdown.push({ score: 1.5, type: 'ungendered', phrase: 'person' });
+        }
+        
+        return { totalScore, breakdown };
+    }
+    
+    scoreBigramNormal(bg1, bg2) {
         if (bg1 === bg2) {
             const words = bg1.split(' ');
-            
-            // Color + important noun = 2 points
             if (words.some(w => this.isColorToken(w)) && words.some(w => this.importantNouns.has(w))) {
-                return { score: 2, type: 'exact-color-noun', phrase: bg1 };
-            }
-            // Other meaningful bigrams = 1 point
-            else if (words.some(w => this.importantNouns.has(w))) {
-                return { score: 1, type: 'exact-clothing', phrase: bg1 };
+                return { score: 3, type: 'exact-color-noun', phrase: bg1 };
+            } else if (words.some(w => this.importantNouns.has(w))) {
+                return { score: 1.5, type: 'exact-clothing', phrase: bg1 };
             } else {
                 return { score: 0.5, type: 'exact-generic', phrase: bg1 };
             }
@@ -223,57 +352,47 @@ export class DescAnalyzer {
         const words1 = bg1.split(' ');
         const words2 = bg2.split(' ');
         
-        // FUZZY COLOR MATCHING
-        // Check if this is a "color + garment" bigram in both
+        // Color + garment fuzzy matching
         const colorWord1 = words1.find(w => this.isColorToken(w));
         const colorWord2 = words2.find(w => this.isColorToken(w));
         const garmentWord1 = words1.find(w => this.importantNouns.has(w));
         const garmentWord2 = words2.find(w => this.importantNouns.has(w));
         
         if (colorWord1 && colorWord2 && garmentWord1 && garmentWord2) {
-            // Normalize garments (handles compounds like "puffer-jacket" → "jacket")
-            const normalizedGarment1 = this.normalizeGarment(garmentWord1);
-            const normalizedGarment2 = this.normalizeGarment(garmentWord2);
+            const norm1 = this.normalizeGarment(garmentWord1);
+            const norm2 = this.normalizeGarment(garmentWord2);
             
-            if (normalizedGarment1 === normalizedGarment2) {
-                // Check color similarity
+            if (norm1 === norm2) {
                 const colorMatch = this.areColorsSimilar(colorWord1, colorWord2);
-                
                 if (colorMatch) {
-                    let score = 1; // Base garment match
+                    let score = 1;
                     let matchType = '';
                     
                     if (colorMatch.match === 'exact') {
-                        score += 2; // Exact color + garment = 3 pts total
+                        score += 2;
                         matchType = 'exact-color-garment';
                     } else if (colorMatch.match === 'family') {
-                        score += 1.5; // Color family + garment = 2.5 pts total
+                        score += 1.5;
                         matchType = `color-family-garment (${colorMatch.families.join(',')})`;
                     } else if (colorMatch.match === 'component') {
-                        score += 1; // Color component + garment = 2 pts total
+                        score += 1;
                         matchType = `color-component-garment (${colorMatch.component})`;
                     }
                     
-                    return { 
-                        score,
-                        type: matchType, 
-                        phrase: `${bg1}~${bg2}` 
-                    };
+                    return { score, type: matchType, phrase: `${bg1}~${bg2}` };
                 }
             }
         }
         
-        // Partial compound match (original logic)
+        // Partial compound matching
         let partialScore = 0;
         const matches = [];
         
-        // Check if compounds share components
         for (const w1 of words1) {
             const components1 = this.decomposeCompound(w1);
             for (const w2 of words2) {
                 const components2 = this.decomposeCompound(w2);
                 
-                // Check component overlap
                 for (const c1 of components1) {
                     if (components2.includes(c1)) {
                         if (this.isColorToken(c1)) {
@@ -298,63 +417,12 @@ export class DescAnalyzer {
         return null;
     }
     
-    /**
-     * Normalize a garment word, handling compounds
-     * "puffer-jacket" → "jacket", "hooded-jacket" → "jacket"
-     */
-    normalizeGarment(word) {
-        // First try direct synonym lookup
-        const normalized = this.normalizeSynonym(word);
-        
-        // If it's a compound that didn't fully normalize, extract the base garment
-        if (normalized.includes('-')) {
-            const parts = normalized.split('-');
-            // Return the part that's a known garment type
-            for (const part of parts) {
-                if (this.importantNouns.has(part)) {
-                    return part;
-                }
-            }
-            // If no known garment, return last part (usually the base noun)
-            return parts[parts.length - 1];
-        }
-        
-        return normalized;
-    }
-    
-    /**
-     * Check if a token is a color (accounting for compounds like "dark-green")
-     */
-    isColorToken(token) {
-        // Check base colors
-        if (this.colors.has(token)) return true;
-        
-        // Check if it normalizes to a color via synonyms
-        const normalized = this.normalizeSynonym(token);
-        if (this.colors.has(normalized)) return true;
-        
-        // Check if it's a compound with a color component
-        if (token.includes('-')) {
-            const parts = token.split('-');
-            return parts.some(p => this.colors.has(p) || this.colors.has(this.normalizeSynonym(p)));
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Get color family for a color token
-     * "dark-blue" → "dark", "red" → "warm", etc.
-     */
     getColorFamily(colorToken) {
         const families = [];
-        
         for (const [family, colors] of Object.entries(this.colorFamilies)) {
             if (colors.includes(colorToken)) {
                 families.push(family);
             }
-            
-            // Also check if compound color contains family members
             if (colorToken.includes('-')) {
                 const parts = colorToken.split('-');
                 for (const part of parts) {
@@ -364,29 +432,20 @@ export class DescAnalyzer {
                 }
             }
         }
-        
         return families;
     }
     
-    /**
-     * Check if two colors are in the same family
-     * "dark-blue" and "black" → both in 'dark' family
-     */
     areColorsSimilar(color1, color2) {
-        // Exact match
         if (color1 === color2) return { match: 'exact', score: 2 };
         
-        // Check if they share a color family
         const families1 = this.getColorFamily(color1);
         const families2 = this.getColorFamily(color2);
-        
         const sharedFamilies = families1.filter(f => families2.includes(f));
         
         if (sharedFamilies.length > 0) {
             return { match: 'family', score: 1.5, families: sharedFamilies };
         }
         
-        // Check if compound colors share any component
         if (color1.includes('-') || color2.includes('-')) {
             const parts1 = color1.split('-');
             const parts2 = color2.split('-');
@@ -403,76 +462,59 @@ export class DescAnalyzer {
         return null;
     }
     
+    normalizeGarment(word) {
+        const normalized = this.normalizeSynonym(word);
+        if (normalized.includes('-')) {
+            const parts = normalized.split('-');
+            for (const part of parts) {
+                if (this.importantNouns.has(part)) return part;
+            }
+            return parts[parts.length - 1];
+        }
+        return normalized;
+    }
+    
+    isColorToken(token) {
+        if (this.colors.has(token)) return true;
+        const normalized = this.normalizeSynonym(token);
+        if (this.colors.has(normalized)) return true;
+        if (token.includes('-')) {
+            const parts = token.split('-');
+            return parts.some(p => this.colors.has(p) || this.colors.has(this.normalizeSynonym(p)));
+        }
+        return false;
+    }
+    
     /**
-     * Main matching function - returns detailed score and breakdown
+     * Main matching - switches strategy based on mode
      */
     matchScore(description1, description2) {
         const words1 = this.tokenize(description1);
         const words2 = this.tokenize(description2);
-        
         const bigrams1 = this.generateBigrams(words1);
         const bigrams2 = this.generateBigrams(words2);
         
-        let totalScore = 0;
-        const breakdown = [];
+        let result;
+        let threshold;
         
-        // Bigram matching with partial compound support
-        const matchedBigrams = new Set();
-        
-        for (const bg1 of bigrams1) {
-            for (const bg2 of bigrams2) {
-                if (matchedBigrams.has(bg2)) continue;
-                
-                const match = this.scoreBigramMatch(bg1, bg2);
-                if (match) {
-                    totalScore += match.score;
-                    breakdown.push(match);
-                    matchedBigrams.add(bg2);
-                    break; // Only match each bigram once
-                }
-            }
-        }
-        
-        // Gender match (high value: 2 points)
-        if (words1.includes('male') && words2.includes('male')) {
-            totalScore += 2;
-            breakdown.push({ score: 2, type: 'gender', phrase: 'male' });
-        } else if (words1.includes('female') && words2.includes('female')) {
-            totalScore += 2;
-            breakdown.push({ score: 2, type: 'gender', phrase: 'female' });
-        }
-        
-        // Single word matches for clothing types (avoid double-counting)
-        const alreadyMatchedWords = new Set(
-            breakdown.flatMap(b => b.phrase.split(/[\s~]/).flatMap(w => w.split('-')))
-        );
-        
-        const clothingWords = ['jacket', 'shirt', 'pants', 'shorts', 'bag', 'backpack', 'headphones'];
-        for (const word of clothingWords) {
-            if (words1.includes(word) && words2.includes(word) && !alreadyMatchedWords.has(word)) {
-                totalScore += 1;
-                breakdown.push({ score: 1, type: 'clothing-type', phrase: word });
-            }
+        if (this.lowLightMode) {
+            result = this.matchScoreLowLightMode(words1, words2, bigrams1, bigrams2);
+            threshold = this.minMatchScoreLowLight;
+        } else {
+            result = this.matchScoreNormalMode(words1, words2, bigrams1, bigrams2);
+            threshold = this.minMatchScoreNormal;
         }
         
         return {
-            score: totalScore,
-            matched: totalScore >= this.minMatchScore,
-            breakdown,
-            details: {
-                description1,
-                description2,
-                words1,
-                words2,
-                bigrams1,
-                bigrams2
-            }
+            score: result.totalScore,
+            matched: result.totalScore >= threshold,
+            threshold: threshold,
+            breakdown: result.breakdown,
+            mode: this.lowLightMode ? 'low-light' : 'normal',
+            details: { description1, description2, words1, words2, bigrams1, bigrams2 }
         };
     }
     
-    /**
-     * Format match breakdown for readable logging
-     */
     formatBreakdown(breakdown) {
         return breakdown.map(b => {
             if (b.matches) {
@@ -480,5 +522,10 @@ export class DescAnalyzer {
             }
             return `${b.phrase} (+${b.score} ${b.type})`;
         }).join(', ');
+    }
+    
+    setLowLightMode(enabled) {
+        this.lowLightMode = enabled;
+        console.log(`🔦 Matching mode: ${enabled ? 'LOW-LIGHT (shape/build/accessories)' : 'NORMAL (colors/garments)'}`);
     }
 }

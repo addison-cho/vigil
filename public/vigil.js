@@ -9,7 +9,10 @@ class Vigil {
         this.vision = null;
         this.totalDetections = 0;
 
-        this.analyzer = new DescAnalyzer({ minMatchScore: 6 });
+        // Initialize the compound matcher
+        this.analyzer = new DescAnalyzer({
+            minMatchScore: 5
+        });
 
         // ai-generated config
         this.config = {
@@ -38,7 +41,7 @@ class Vigil {
                 option.value = video.path;
                 option.textContent = video.name;
                 select.appendChild(option);
-            });
+            }); 
         }
         catch (error) {
             console.error('Error loading videos:', error);
@@ -60,6 +63,61 @@ class Vigil {
         
         document.getElementById('startBtn').addEventListener('click', () => this.start());
         document.getElementById('stopBtn').addEventListener('click', () => this.stop());
+        
+        // Low-light mode toggle
+        const lowLightToggle = document.getElementById('lowLightToggle');
+        if (lowLightToggle) {
+            lowLightToggle.addEventListener('change', (e) => {
+                this.analyzer.setLowLightMode(e.target.checked);
+                this.addLog(`${e.target.checked ? '🌙 Low-light mode: Focusing on build/shape/accessories' : '☀️ Normal mode: Focusing on colors/garments'}`, 'system');
+            });
+        }
+    }
+
+    getPromptForMode() {
+        if (this.analyzer.lowLightMode) {
+            // LOW-LIGHT MODE: Focus on silhouettes + basic light/dark colors
+            return `Describe ONLY people visible in this low-light/nighttime footage. Return JSON:
+{
+    "people": [{
+        "description": "build, overall color tone, garment shapes, accessories"
+    }],
+    "count": number
+}
+
+IMPORTANT - Low-light conditions:
+- Build: "tall", "short", "large build", "small build", "medium build"
+- Overall color: Use ONLY "light colored" OR "dark colored" for clothing (don't try to identify specific colors like blue/green)
+- Garment SHAPES: "puffy coat", "fitted jacket", "long coat", "loose hoodie", "baggy pants"
+- Accessories: "backpack", "bag", "headphones", "hat", "cap"
+
+Examples:
+✓ {"people": [{"description": "tall, dark colored puffy coat, backpack"}], "count": 1}
+✓ {"people": [{"description": "small build, light colored long coat, headphones"}], "count": 1}
+✓ {"people": [{"description": "medium build, dark colored fitted jacket, dark pants"}], "count": 1}`;
+        } else {
+            // NORMAL MODE: Colors and details
+            return `Describe ONLY people visible. Return JSON:
+{
+    "people": [{
+        "description": "gender, upper clothing, lower clothing, accessories"
+    }],
+    "count": number
+}
+
+Format rules:
+- Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
+- Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
+- Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
+- Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
+- ALWAYS describe both upper AND lower body clothing
+- Order: always COLOR before GARMENT ("black jacket" never "jacket black")
+- Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
+
+Examples:
+✓ {"people": [{"description": "male, dark green puffer jacket, black pants, backpack"}], "count": 1}
+✓ {"people": [{"description": "female, red hoodie, blue jeans, headphones"}], "count": 1}`;
+        }
     }
 
     async start() {
@@ -93,30 +151,11 @@ class Vigil {
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
-            prompt: `Describe ONLY people visible. Return JSON:
-                {
-                    "people": [{
-                        "description": "gender, upper clothing, lower clothing, accessories"
-                    }],
-                    "count": number
-                }
-
-                Format rules:
-                - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
-                - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
-                - Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
-                - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
-                - ALWAYS describe both upper AND lower body clothing
-                - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
-                - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
-
-                Examples:
-                "male, dark green puffer jacket, black pants, backpack"
-                "female, red hoodie, blue jeans, headphones"`,
+            prompt: this.getPromptForMode(),
             source: { type: 'video', file: file },
             processing: {
-                clip_length_seconds: 1,
-                delay_seconds: 1,
+                clip_length_seconds: 3,
+                delay_seconds: 2,
                 fps: 15,
                 sampling_ratio: 0.2
             },
@@ -139,7 +178,8 @@ class Vigil {
         document.getElementById('startBtn').disabled = false;
         document.getElementById('stopBtn').disabled = true;
         document.getElementById('videoPlayer').pause();
-
+        
+        // Generate end report
         this.generateEndReport();
     }
 
@@ -151,7 +191,23 @@ class Vigil {
                 return;
             }
 
-            const data = JSON.parse(result.result);
+            // Clean the result - remove markdown code blocks if present
+            let cleanedResult = result.result.trim();
+            
+            // Remove markdown code fences (```json and ```)
+            cleanedResult = cleanedResult.replace(/```json\s*/g, '');
+            cleanedResult = cleanedResult.replace(/```\s*/g, '');
+            
+            // Remove any stray backticks
+            cleanedResult = cleanedResult.replace(/`/g, '');
+            
+            // Try to find JSON object if there's surrounding text
+            const jsonMatch = cleanedResult.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                cleanedResult = jsonMatch[0];
+            }
+
+            const data = JSON.parse(cleanedResult);
             const timestamp = new Date().toISOString();
 
             if (data.count > 0) {
@@ -168,10 +224,13 @@ class Vigil {
             console.error("Error parsing JSON:", e);
             console.log("Raw result:", result.result);
             console.log("Attempted to parse:", result.result.substring(0, 200));
-            console.log("Skipping this frame and continuing...");        }
+            console.log("Skipping this frame and continuing...");
+            // Don't crash - just skip this bad result and continue
+        }
     }
 
     trackPerson(newPerson, timestamp) {
+        // Use the compound matcher to find similar person
         let bestMatch = null;
         let bestScore = 0;
         
@@ -241,10 +300,6 @@ class Vigil {
         }
     }
 
-    isSimilarPerson(p1, p2) {
-        return (this.analyzer.matchScore(p1.description, p2.description) > 7);
-    }
-
     getTimeDurationSeconds(start, end) {
         return Math.floor((new Date(end) - new Date(start)) / 1000);
     }
@@ -309,7 +364,8 @@ class Vigil {
             this.addLog(`Person #${index + 1}: "${person.description}" (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
         });
     }
-    
+
+    // claude revised previous code for "clean-up"
     addLog(message, type = 'normal') {
         const feed = document.getElementById('detectionFeed');
         const item = document.createElement('div');
@@ -323,8 +379,8 @@ class Vigil {
         
         feed.insertBefore(item, feed.firstChild);
         
-        // Keep only last 50 items
-        while (feed.children.length > 50) {
+        // Keep only last 100 items (increased for better session history)
+        while (feed.children.length > 100) {
             feed.removeChild(feed.lastChild);
         }
     }
