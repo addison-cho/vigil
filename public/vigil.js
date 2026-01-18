@@ -8,6 +8,54 @@ class Vigil {
         this.vision = null;
         this.totalDetections = 0;
 
+        this.stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during', 'over', 'wearing', 
+            'person', 'individual']);
+
+        // Synonym groups for normalization
+        this.synonymGroups = {
+            // Colors - light
+            'white': ['white', 'light-colored', 'light', 'pale', 'cream', 'off-white', 'ivory', 'beige'],
+            'gray': ['gray', 'grey', 'charcoal', 'silver'],
+            // Colors - dark
+            'black': ['black', 'dark', 'dark-colored'],
+            'brown': ['brown', 'tan', 'khaki'],
+            // Colors - bright
+            'red': ['red', 'crimson', 'maroon', 'burgundy'],
+            'blue': ['blue', 'navy', 'cobalt'],
+            'green': ['green', 'olive', 'forest'],
+            'yellow': ['yellow', 'gold', 'golden'],
+            'orange': ['orange'],
+            'purple': ['purple', 'violet'],
+            'pink': ['pink'],
+            
+            // Upper body garments
+            'jacket': ['jacket', 'coat', 'hoodie', 'sweatshirt', 'sweater', 'cardigan', 'blazer'],
+            'shirt': ['shirt', 'tshirt', 't-shirt', 'top', 'blouse', 'polo'],
+            
+            // Lower body garments
+            'pants': ['pants', 'trousers', 'jeans', 'slacks', 'leggings'],
+            'shorts': ['shorts'],
+            'skirt': ['skirt', 'dress'],
+            
+            // Accessories
+            'bag': ['bag', 'backpack', 'purse', 'satchel', 'pack', 'rucksack'],
+            'hat': ['hat', 'cap', 'beanie', 'baseball'],
+            'glasses': ['glasses', 'sunglasses', 'shades', 'spectacles'],
+            'headphones': ['headphones', 'earbuds', 'earphones', 'airpods']
+        };
+
+        // ai-generated config
+        this.config = {
+            minBigramMatches: 2,      // How many 2-word phrases must match (experiment with 1-3)
+            minSingleWordMatches: 3,  // Fallback if no bigrams match (experiment with 2-4)
+            alertThresholds: {
+                awareness: 60,
+                caution: 120,
+                alert: 300
+            }
+        };
+
         this.initUI();
     }
 
@@ -77,6 +125,10 @@ class Vigil {
         document.getElementById('stopBtn').disabled = false;
         
         // overshoot
+        /*
+        "description": "gender, clothing colors and items, any accessories (e.g., 'male, light-colored jacket over black shirt, headphones' or 'female, red hoodie, black backpack')"
+"notable_features": "hair color/length if visible, distinctive items, build descriptors like 'tall' or 'oversized clothing' (e.g., 'short brown hair, tall' or 'long blonde hair, carrying large bag')"
+        */
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
@@ -84,18 +136,18 @@ class Vigil {
                 {
                     "people": [
                     {
-                        "distance": "close/medium/far",
-                        "description": "brief description of clothing, height, build",
-                        "notable_features": "any distinctive characteristics"
+                        "description": "gender, clothing colors and items, any accessories (e.g., 'male, light-colored jacket over black shirt, headphones' or 'female, red hoodie, black backpack')",
+                        "notable_features": "hair color/length if visible, distinctive items, build descriptors like 'tall' or 'oversized clothing' (e.g., 'short brown hair, tall' or 'long blonde hair, carrying large bag')"
                     }
                     ],
-                    "count": number of people visible behind the camera perspective
+                    "count": number of people visible
                 }
-                Return only valid JSON, no other text.`,
+                
+                CRITICAL: Describe ONLY people, NOT the environment, background, or setting. If no people are visible, return count: 0 with empty people array. Return ONLY valid JSON, no other text.`,
             source: { type: 'video', file: file },
             processing: {
-                clip_length_seconds: 3,
-                delay_seconds: 2,
+                clip_length_seconds: 1,
+                delay_seconds: 1,
                 fps: 15,
                 sampling_ratio: 0.2
             },
@@ -122,6 +174,12 @@ class Vigil {
 
     handleDetection(result) {
         try {
+            // Check if result exists and has content
+            if (!result.result || result.result.trim() === '') {
+                console.warn("Received empty result, skipping...");
+                return;
+            }
+
             const data = JSON.parse(result.result);
             const timestamp = new Date().toISOString();
 
@@ -138,6 +196,8 @@ class Vigil {
         catch (e) {
             console.error("Error parsing JSON:", e);
             console.log("Raw result:", result.result);
+            console.log("Skipping this frame and continuing...");
+            // Don't crash - just skip this bad result and continue
         }
     }
 
@@ -145,58 +205,123 @@ class Vigil {
         const match = this.personHistory.find(p => this.isSimilarPerson(p, newPerson));
 
         if (match) {
-            // if person has already been seen before
             match.timestamps.push(timestamp);
             match.lastSeen = timestamp;
             match.distance = newPerson.distance;
             
+            const durationSeconds = this.getTimeDurationSeconds(match.firstSeen, match.lastSeen);
             const count = match.timestamps.length;
-            this.addLog(`  ↻ Recurring person (seen ${count}x): ${match.description}`);
             
-            // Alert thresholds
-            if (count === 5) {
-                this.addLog(`  ⚠️  AWARENESS: Same person detected 5 times`);
-            } else if (count === 15) {
-                this.addLog(`  🔶 CAUTION: Same person detected 15 times`);
-            } else if (count === 30) {
-                this.addLog(`  🚨 ALERT: Same person detected 30 times!`);
-                this.addLog(`     First seen: ${match.firstSeen}`);
-                this.addLog(`     Duration: ${this.getTimeDuration(match.firstSeen, match.lastSeen)}`);
+            this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)}): ${match.description}`);
+            
+            // Time-based alerts
+            const thresholds = this.config.alertThresholds;
+            const prevDuration = this.getTimeDurationSeconds(match.firstSeen, match.timestamps[match.timestamps.length - 2]);
+            
+            if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
+                this.addLog(`  ⚠️  AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.alertCount++;
+            } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
+                this.addLog(`  🔶 CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.alertCount++;
+            } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
+                this.addLog(`  🚨 ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
+                this.addLog(`     First seen: ${new Date(match.firstSeen).toLocaleTimeString()}`);
+                this.alertCount++;
             }
         }
         else {
-
-        const personRecord = {
-            description: newPerson.description,
+            const personRecord = {
+                description: newPerson.description,
                 notable_features: newPerson.notable_features || "none",
                 distance: newPerson.distance,
                 timestamps: [timestamp],
                 firstSeen: timestamp,
                 lastSeen: timestamp
             };
-            
-        this.personHistory.push(personRecord);
-        this.addLog(`  + New person tracked: ${newPerson.description}`);
+                
+            this.personHistory.push(personRecord);
+            this.addLog(`  + New person tracked: ${newPerson.description}`);
         }
     }
 
-    // fix later; get rid of words like "the", "and", etc.
     isSimilarPerson(p1, p2) {
         const features1 = (p1.description || '') + ' ' + (p1.notable_features || '');
         const features2 = (p2.description || '') + ' ' + (p2.notable_features || '');
         
-        const words1 = features1.toLowerCase().split(' ').filter(w => w.length > 2);
-        const words2 = features2.toLowerCase().split(' ').filter(w => w.length > 2);
-
-        const commonWords = words1.filter(word => words2.includes(word));
-        return commonWords.length >= 3;
+        // Clean and tokenize WITH SYNONYM NORMALIZATION
+        const words1 = this.tokenize(features1);
+        const words2 = this.tokenize(features2);
+        
+        // Generate bigrams (2-word phrases like "white jacket")
+        const bigrams1 = this.generateBigrams(words1);
+        const bigrams2 = this.generateBigrams(words2);
+        
+        // Count matching bigrams
+        const matchingBigrams = bigrams1.filter(bg => bigrams2.includes(bg));
+        
+        // Count matching words
+        const matchingWords = words1.filter(word => words2.includes(word));
+        
+        console.log(`Comparing: "${features1}" vs "${features2}"`);
+        console.log(`  Words 1 (normalized): [${words1.join(', ')}]`);
+        console.log(`  Words 2 (normalized): [${words2.join(', ')}]`);
+        console.log(`  Bigrams 1: [${bigrams1.join(', ')}]`);
+        console.log(`  Bigrams 2: [${bigrams2.join(', ')}]`);
+        console.log(`  Matching bigrams: ${matchingBigrams.length} (${matchingBigrams.join(', ')})`);
+        console.log(`  Matching words: ${matchingWords.length} (${matchingWords.join(', ')})`);
+        
+        // Primary check: bigram matches
+        if (matchingBigrams.length >= this.config.minBigramMatches) {
+            console.log(`  ✓ MATCH via bigrams`);
+            return true;
+        }
+        
+        // Fallback: single word matches
+        if (matchingWords.length >= this.config.minSingleWordMatches) {
+            console.log(`  ✓ MATCH via words`);
+            return true;
+        }
+        
+        console.log(`  ✗ NO MATCH`);
+        return false;
     }
 
-    getTimeDuration(start, end) {
-        const diff = new Date(end) - new Date(start);
-        const seconds = Math.floor(diff / 1000);
+    // Tokenize: remove stopwords, filter short words, NORMALIZE SYNONYMS
+    tokenize(text) {
+        return text
+            .toLowerCase()
+            .replace(/[^\w\s]/g, '') // Remove punctuation
+            .split(/\s+/)
+            .filter(w => w.length > 2 && !this.stopwords.has(w))
+            .map(w => this.normalizeSynonym(w)); // ← NEW: Normalize synonyms
+    }
+
+    // Normalize a word to its canonical synonym
+    normalizeSynonym(word) {
+        for (const [canonical, synonyms] of Object.entries(this.synonymGroups)) {
+            if (synonyms.includes(word)) {
+                return canonical; // Return the canonical form (e.g., "light-colored" → "white")
+            }
+        }
+        return word; // Return original if no synonym found
+    }
+
+    // Generate bigrams: ["tall", "man", "blue", "jacket"] → ["tall man", "man blue", "blue jacket"]
+    generateBigrams(words) {
+        const bigrams = [];
+        for (let i = 0; i < words.length - 1; i++) {
+            bigrams.push(`${words[i]} ${words[i + 1]}`);
+        }
+        return bigrams;
+    }
+
+    getTimeDurationSeconds(start, end) {
+        return Math.floor((new Date(end) - new Date(start)) / 1000);
+    }
+
+    formatDuration(seconds) {
         const minutes = Math.floor(seconds / 60);
-        
         if (minutes > 0) {
             return `${minutes}m ${seconds % 60}s`;
         }
