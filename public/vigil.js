@@ -1,5 +1,5 @@
 import { RealtimeVision } from 'https://esm.sh/@overshoot/sdk';
-import { DescAnalyzer } from './compound-matcher.js';
+import { DescAnalyzer } from './language.js';
 
 class Vigil {
     constructor() {
@@ -9,9 +9,10 @@ class Vigil {
         this.vision = null;
         this.totalDetections = 0;
 
+        this.analyzer = new DescAnalyzer({ minMatchScore: 7 });
+
         // ai-generated config
         this.config = {
-            minMatchScore: 5,         // Points needed to consider it the same person (lowered to handle AI inconsistency)
             alertThresholds: {
                 awareness: 60,
                 caution: 120,
@@ -25,19 +26,20 @@ class Vigil {
     // UI was AI-generated
     async initUI() {
         try {
-        // Load available videos
-        const response = await fetch('/api/videos');
-        const videos = await response.json();
-        console.log('Loaded videos:', videos);
-        
-        const select = document.getElementById('videoSelect');
-        videos.forEach(video => {
-            console.log('Adding option:', video.name);
-            const option = document.createElement('option');
-            option.value = video.path;
-            option.textContent = video.name;
-            select.appendChild(option);
-        }); }
+            // Load available videos
+            const response = await fetch('/api/videos');
+            const videos = await response.json();
+            console.log('Loaded videos:', videos);
+            
+            const select = document.getElementById('videoSelect');
+            videos.forEach(video => {
+                console.log('Adding option:', video.name);
+                const option = document.createElement('option');
+                option.value = video.path;
+                option.textContent = video.name;
+                select.appendChild(option);
+            });
+        }
         catch (error) {
             console.error('Error loading videos:', error);
             // Add a fallback option for testing
@@ -136,6 +138,8 @@ class Vigil {
         document.getElementById('startBtn').disabled = false;
         document.getElementById('stopBtn').disabled = true;
         document.getElementById('videoPlayer').pause();
+
+        this.generateEndReport();
     }
 
     handleDetection(result) {
@@ -162,9 +166,8 @@ class Vigil {
         catch (e) {
             console.error("Error parsing JSON:", e);
             console.log("Raw result:", result.result);
-            console.log("Skipping this frame and continuing...");
-            // Don't crash - just skip this bad result and continue
-        }
+            console.log("Attempted to parse:", result.result.substring(0, 200));
+            console.log("Skipping this frame and continuing...");        }
     }
 
     trackPerson(newPerson, timestamp) {
@@ -178,21 +181,21 @@ class Vigil {
             const durationSeconds = this.getTimeDurationSeconds(match.firstSeen, match.lastSeen);
             const count = match.timestamps.length;
             
-            this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)}): ${match.description}`);
+            this.addLog(` ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)}): ${match.description}`);
             
             // Time-based alerts
             const thresholds = this.config.alertThresholds;
             const prevDuration = this.getTimeDurationSeconds(match.firstSeen, match.timestamps[match.timestamps.length - 2]);
             
             if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
-                this.addLog(`  ⚠️  AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.addLog(`AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
                 this.alertCount++;
             } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
-                this.addLog(`  🔶 CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.addLog(`CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
                 this.alertCount++;
             } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
-                this.addLog(`  🚨 ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
-                this.addLog(`     First seen: ${new Date(match.firstSeen).toLocaleTimeString()}`);
+                this.addLog(`ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
+                this.addLog(`First seen: ${new Date(match.firstSeen).toLocaleTimeString()}`);
                 this.alertCount++;
             }
         }
@@ -207,12 +210,12 @@ class Vigil {
             };
                 
             this.personHistory.push(personRecord);
-            this.addLog(`  + New person tracked: ${newPerson.description}`);
+            this.addLog(` + New person tracked: ${newPerson.description}`);
         }
     }
 
     isSimilarPerson(p1, p2) {
-        return this.analyzer.matchScore(p1.description, p2.description);
+        return (this.analyzer.matchScore(p1.description, p2.description) > 7);
     }
 
     getTimeDurationSeconds(start, end) {

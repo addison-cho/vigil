@@ -13,9 +13,7 @@ const port = 3000;
 app.use(express.static('public'));
 app.use('/videos', express.static('videos'));
 
-// ai-generated
-
-// API: Get list of available videos
+//.
 app.get('/api/videos', (req, res) => {
     const videosDir = path.join(__dirname, 'videos');
     
