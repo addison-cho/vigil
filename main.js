@@ -1,3 +1,10 @@
+/*
+<label>
+    <input type="checkbox" id="lowLightToggle">
+    🌙 Low-Light Mode (focus on silhouettes/shapes)
+    </label>
+*/
+
 import express from 'express'
 import fs from 'fs'
 import path from 'path'
