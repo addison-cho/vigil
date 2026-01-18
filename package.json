@@ -1,0 +1,12 @@
+{
+  "type": "module"
+  ,"name": "vigil"
+  ,"version": "0.1.0"
+  ,"description": "A simple video surveillance system using computer vision."
+  ,"main": "main.js",
+  "dependencies": {
+    "@overshoot/sdk": "^0.1.0-alpha.2",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}
