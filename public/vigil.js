@@ -1,5 +1,11 @@
 import { RealtimeVision } from 'https://esm.sh/@overshoot/sdk';
 
+/*
+    'bag': ['bag', 'backpack', 'purse', 'satchel', 'pack', 'rucksack'],
+    'hat': ['hat', 'cap', 'beanie', 'baseball'],
+    'glasses': ['glasses', 'sunglasses', 'shades', 'spectacles'],
+    'headphones': ['headphones', 'earbuds', 'earphones', 'airpods']
+*/
 class Vigil {
     constructor() {
         console.log("Vigil initialized.");
@@ -39,16 +45,11 @@ class Vigil {
             'skirt': ['skirt', 'dress'],
             
             // Accessories
-            'bag': ['bag', 'backpack', 'purse', 'satchel', 'pack', 'rucksack'],
-            'hat': ['hat', 'cap', 'beanie', 'baseball'],
-            'glasses': ['glasses', 'sunglasses', 'shades', 'spectacles'],
-            'headphones': ['headphones', 'earbuds', 'earphones', 'airpods']
         };
 
         // ai-generated config
         this.config = {
-            minBigramMatches: 2,      // How many 2-word phrases must match (experiment with 1-3)
-            minSingleWordMatches: 3,  // Fallback if no bigrams match (experiment with 2-4)
+            minMatchScore: 5,         // Points needed to consider it the same person (lowered to handle AI inconsistency)
             alertThresholds: {
                 awareness: 60,
                 caution: 120,
@@ -125,25 +126,28 @@ class Vigil {
         document.getElementById('stopBtn').disabled = false;
         
         // overshoot
-        /*
-        "description": "gender, clothing colors and items, any accessories (e.g., 'male, light-colored jacket over black shirt, headphones' or 'female, red hoodie, black backpack')"
-"notable_features": "hair color/length if visible, distinctive items, build descriptors like 'tall' or 'oversized clothing' (e.g., 'short brown hair, tall' or 'long blonde hair, carrying large bag')"
-        */
         this.vision = new RealtimeVision({
             apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
             apiKey: 'ovs_8a67df04b632392869c2a7a8facc37dc',
-            prompt: `Return a JSON object with:
+            prompt: `Describe ONLY people visible. Return JSON:
                 {
-                    "people": [
-                    {
-                        "description": "gender, clothing colors and items, any accessories (e.g., 'male, light-colored jacket over black shirt, headphones' or 'female, red hoodie, black backpack')",
-                        "notable_features": "hair color/length if visible, distinctive items, build descriptors like 'tall' or 'oversized clothing' (e.g., 'short brown hair, tall' or 'long blonde hair, carrying large bag')"
-                    }
-                    ],
-                    "count": number of people visible
+                    "people": [{
+                        "description": "gender, upper clothing, lower clothing, accessories"
+                    }],
+                    "count": number
                 }
-                
-                CRITICAL: Describe ONLY people, NOT the environment, background, or setting. If no people are visible, return count: 0 with empty people array. Return ONLY valid JSON, no other text.`,
+
+                Format rules:
+                - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
+                - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
+                - Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
+                - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
+                - ALWAYS describe both upper AND lower body clothing
+                - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
+
+                Examples:
+                "male, dark green puffer jacket, black pants, backpack"
+                "female, red hoodie, blue jeans, headphones"`,
             source: { type: 'video', file: file },
             processing: {
                 clip_length_seconds: 1,
@@ -233,7 +237,7 @@ class Vigil {
         else {
             const personRecord = {
                 description: newPerson.description,
-                notable_features: newPerson.notable_features || "none",
+                // notable_features: newPerson.notable_features || "none",
                 distance: newPerson.distance,
                 timestamps: [timestamp],
                 firstSeen: timestamp,
@@ -246,8 +250,10 @@ class Vigil {
     }
 
     isSimilarPerson(p1, p2) {
-        const features1 = (p1.description || '') + ' ' + (p1.notable_features || '');
-        const features2 = (p2.description || '') + ' ' + (p2.notable_features || '');
+        const features1 = (p1.description || '')
+        // + ' ' + (p1.notable_features || '');
+        const features2 = (p2.description || '')
+        // + ' ' + (p2.notable_features || '');
         
         // Clean and tokenize WITH SYNONYM NORMALIZATION
         const words1 = this.tokenize(features1);
@@ -257,29 +263,61 @@ class Vigil {
         const bigrams1 = this.generateBigrams(words1);
         const bigrams2 = this.generateBigrams(words2);
         
-        // Count matching bigrams
-        const matchingBigrams = bigrams1.filter(bg => bigrams2.includes(bg));
+        // WEIGHTED MATCHING
+        let score = 0;
+        const matchDetails = [];
         
-        // Count matching words
-        const matchingWords = words1.filter(word => words2.includes(word));
+        // Color + noun bigrams (high value: 2 points)
+        const colors = ['white', 'black', 'gray', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown'];
+        const importantNouns = ['jacket', 'shirt', 'pants', 'shorts', 'jeans', 'hoodie', 'bag', 'backpack', 'headphones', 'glasses', 'hat', 'hair'];
         
-        console.log(`Comparing: "${features1}" vs "${features2}"`);
-        console.log(`  Words 1 (normalized): [${words1.join(', ')}]`);
-        console.log(`  Words 2 (normalized): [${words2.join(', ')}]`);
-        console.log(`  Bigrams 1: [${bigrams1.join(', ')}]`);
-        console.log(`  Bigrams 2: [${bigrams2.join(', ')}]`);
-        console.log(`  Matching bigrams: ${matchingBigrams.length} (${matchingBigrams.join(', ')})`);
-        console.log(`  Matching words: ${matchingWords.length} (${matchingWords.join(', ')})`);
+        bigrams1.forEach(bg => {
+            if (bigrams2.includes(bg)) {
+                const words = bg.split(' ');
+                // Color + important noun = 2 points
+                if (colors.includes(words[0]) && importantNouns.includes(words[1])) {
+                    score += 2;
+                    matchDetails.push(`${bg} (+2 color+noun)`);
+                }
+                // Other meaningful bigrams = 1 point
+                else if (words.some(w => importantNouns.includes(w))) {
+                    score += 1;
+                    matchDetails.push(`${bg} (+1 clothing)`);
+                } else {
+                    score += 0.5;
+                    matchDetails.push(`${bg} (+0.5 generic)`);
+                }
+            }
+        });
         
-        // Primary check: bigram matches
-        if (matchingBigrams.length >= this.config.minBigramMatches) {
-            console.log(`  ✓ MATCH via bigrams`);
-            return true;
+        // Gender match (high value: 2 points)
+        if (words1.includes('male') && words2.includes('male')) {
+            score += 2;
+            matchDetails.push(`male (+2 gender)`);
+        } else if (words1.includes('female') && words2.includes('female')) {
+            score += 2;
+            matchDetails.push(`female (+2 gender)`);
         }
         
-        // Fallback: single word matches
-        if (matchingWords.length >= this.config.minSingleWordMatches) {
-            console.log(`  ✓ MATCH via words`);
+        // Single word matches for clothing types (1 point each, but don't double-count if already in bigram)
+        const clothingWords = ['jacket', 'shirt', 'pants', 'shorts', 'bag', 'backpack', 'headphones'];
+        const alreadyMatched = new Set(matchDetails.join(' ').split(' '));
+        
+        clothingWords.forEach(word => {
+            if (words1.includes(word) && words2.includes(word) && !alreadyMatched.has(word)) {
+                score += 1;
+                matchDetails.push(`${word} (+1 clothing type)`);
+            }
+        });
+        
+        console.log(`Comparing: "${features1}" vs "${features2}"`);
+        console.log(`  Words 1: [${words1.join(', ')}]`);
+        console.log(`  Words 2: [${words2.join(', ')}]`);
+        console.log(`  Matches: [${matchDetails.join(', ')}]`);
+        console.log(`  TOTAL SCORE: ${score} (threshold: ${this.config.minMatchScore})`);
+        
+        if (score >= this.config.minMatchScore) {
+            console.log(`  ✓ MATCH`);
             return true;
         }
         
