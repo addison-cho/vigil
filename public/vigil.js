@@ -108,6 +108,7 @@ class Vigil {
                 - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
                 - ALWAYS describe both upper AND lower body clothing
                 - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
+                - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
 
                 Examples:
                 "male, dark green puffer jacket, black pants, backpack"
@@ -171,46 +172,72 @@ class Vigil {
     }
 
     trackPerson(newPerson, timestamp) {
-        const match = this.personHistory.find(p => this.isSimilarPerson(p, newPerson));
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        for (const existingPerson of this.personHistory) {
+            const matchResult = this.analyzer.matchScore(
+                existingPerson.description, 
+                newPerson.description
+            );
+            
+            if (matchResult.matched && matchResult.score > bestScore) {
+                bestMatch = existingPerson;
+                bestScore = matchResult.score;
+            }
+        }
 
-        if (match) {
-            match.timestamps.push(timestamp);
-            match.lastSeen = timestamp;
-            match.distance = newPerson.distance;
+        if (bestMatch) {
+            bestMatch.timestamps.push(timestamp);
+            bestMatch.lastSeen = timestamp;
             
-            const durationSeconds = this.getTimeDurationSeconds(match.firstSeen, match.lastSeen);
-            const count = match.timestamps.length;
+            // Store all descriptions seen for this person
+            if (!bestMatch.allDescriptions) {
+                bestMatch.allDescriptions = [bestMatch.description];
+            }
+            if (!bestMatch.allDescriptions.includes(newPerson.description)) {
+                bestMatch.allDescriptions.push(newPerson.description);
+            }
             
-            this.addLog(` ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)}): ${match.description}`);
+            const durationSeconds = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.lastSeen);
+            const count = bestMatch.timestamps.length;
+            
+            // Get detailed match breakdown
+            const matchResult = this.analyzer.matchScore(bestMatch.description, newPerson.description);
+            const breakdownStr = this.analyzer.formatBreakdown(matchResult.breakdown);
+            
+            this.addLog(`  ↻ Recurring person (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
+            this.addLog(`     Original: "${bestMatch.description}"`);
+            this.addLog(`     Current:  "${newPerson.description}"`);
+            this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
             
             // Time-based alerts
             const thresholds = this.config.alertThresholds;
-            const prevDuration = this.getTimeDurationSeconds(match.firstSeen, match.timestamps[match.timestamps.length - 2]);
+            const prevDuration = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]);
             
             if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
-                this.addLog(`AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.addLog(`  ⚠️  AWARENESS: Person present for ${this.formatDuration(durationSeconds)}`);
                 this.alertCount++;
             } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
-                this.addLog(`CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
+                this.addLog(`  🔶 CAUTION: Person present for ${this.formatDuration(durationSeconds)}`);
                 this.alertCount++;
             } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
-                this.addLog(`ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
-                this.addLog(`First seen: ${new Date(match.firstSeen).toLocaleTimeString()}`);
+                this.addLog(`  🚨 ALERT: Person present for ${this.formatDuration(durationSeconds)}!`);
+                this.addLog(`     First seen: ${new Date(bestMatch.firstSeen).toLocaleTimeString()}`);
                 this.alertCount++;
             }
         }
         else {
             const personRecord = {
                 description: newPerson.description,
-                // notable_features: newPerson.notable_features || "none",
-                distance: newPerson.distance,
                 timestamps: [timestamp],
                 firstSeen: timestamp,
-                lastSeen: timestamp
+                lastSeen: timestamp,
+                allDescriptions: [newPerson.description]
             };
                 
             this.personHistory.push(personRecord);
-            this.addLog(` + New person tracked: ${newPerson.description}`);
+            this.addLog(`  + New person tracked: ${newPerson.description}`);
         }
     }
 
@@ -236,7 +263,53 @@ class Vigil {
         document.getElementById('alerts').textContent = this.alertCount;
     }
 
-    // claude revised previous code for "clean-up"
+    generateEndReport() {
+        console.log("\n========== VIGIL SESSION REPORT ==========");
+        console.log(`Total unique people tracked: ${this.personHistory.length}`);
+        console.log(`Total detections: ${this.totalDetections}`);
+        console.log(`Alerts triggered: ${this.alertCount}`);
+        console.log("\n--- UNIQUE PEOPLE DETECTED ---\n");
+        
+        // Sort by duration (longest first)
+        const sortedPeople = [...this.personHistory].sort((a, b) => {
+            const durationA = this.getTimeDurationSeconds(a.firstSeen, a.lastSeen);
+            const durationB = this.getTimeDurationSeconds(b.firstSeen, b.lastSeen);
+            return durationB - durationA;
+        });
+        
+        sortedPeople.forEach((person, index) => {
+            const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
+            const detectionCount = person.timestamps.length;
+            
+            console.log(`Person #${index + 1}:`);
+            console.log(`  Primary description: "${person.description}"`);
+            
+            if (person.allDescriptions && person.allDescriptions.length > 1) {
+                console.log(`  All descriptions seen:`);
+                person.allDescriptions.forEach(desc => {
+                    console.log(`    - "${desc}"`);
+                });
+            }
+            
+            console.log(`  Detected ${detectionCount} times over ${this.formatDuration(duration)}`);
+            console.log(`  First seen: ${new Date(person.firstSeen).toLocaleTimeString()}`);
+            console.log(`  Last seen: ${new Date(person.lastSeen).toLocaleTimeString()}`);
+            console.log("");
+        });
+        
+        console.log("==========================================\n");
+        
+        // Also add to UI
+        this.addLog(`\n========== SESSION COMPLETE ==========`, 'report');
+        this.addLog(`${this.personHistory.length} unique people | ${this.totalDetections} total detections | ${this.alertCount} alerts`, 'report');
+        
+        sortedPeople.forEach((person, index) => {
+            const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
+            const detectionCount = person.timestamps.length;
+            this.addLog(`Person #${index + 1}: "${person.description}" (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
+        });
+    }
+    
     addLog(message, type = 'normal') {
         const feed = document.getElementById('detectionFeed');
         const item = document.createElement('div');
