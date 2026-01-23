@@ -23,7 +23,7 @@ export class DescAnalyzer {
             'white': ['white', 'light-colored', 'light', 'pale', 'cream', 'off-white', 'ivory', 'beige'],
             'gray': ['gray', 'grey', 'charcoal', 'silver'],
             // Colors - dark
-            'black': ['black', 'dark-colored', 'dark', 'unclear', 'unknown'],
+            'black': ['black'],
             'brown': ['brown', 'tan', 'khaki'],
             // Colors - bright
             'red': ['red', 'crimson', 'maroon', 'burgundy'],
@@ -257,6 +257,17 @@ export class DescAnalyzer {
             const norm1 = this.normalizeGarment(garmentWord1);
             const norm2 = this.normalizeGarment(garmentWord2);
             
+            // REAL QUICK
+                const words1 = bg1.split(' ');
+                const words2 = bg2.split(' ');
+                
+                const colorFirst1 = words1.indexOf(colorWord1) < words1.indexOf(garmentWord1);
+                const colorFirst2 = words2.indexOf(colorWord2) < words2.indexOf(garmentWord2);
+                
+                if (!colorFirst1 || !colorFirst2) {
+                    return null; // Invalid bigram structure
+                }
+                
             if (norm1 === norm2) {
                 const colorMatch = this.areColorsSimilar(colorWord1, colorWord2);
                 if (colorMatch) {

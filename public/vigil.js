@@ -11,7 +11,7 @@ class Vigil {
         this.processingQueue = Promise.resolve();
 
         this.analyzer = new DescAnalyzer({
-            minMatchScore: 5
+            minMatchScore: 4.7
         });
 
         this.config = {
@@ -65,7 +65,7 @@ class Vigil {
         return `Describe ONLY people visible. Return JSON:
         {
             "people": [{
-                "description": "gender, upper clothing, lower clothing, accessories"
+                "description": "gender, upper clothing, lower clothing, worn accessories"
             }],
             "count": number
         }
@@ -81,7 +81,7 @@ class Vigil {
         Format rules:
         - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
         - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
-        - Accessories: list if visible - "backpack", "headphones", "baseball cap" (omit if none)
+        - Accessories: list if visible and being worn - "backpack", "headphones", "baseball cap" (omit if none)
         - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
         - ALWAYS describe both upper AND lower body clothing
         - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
@@ -302,7 +302,28 @@ class Vigil {
         let bestScore = 0;
         
         console.log(`\n=== Matching new person: "${newPerson.description}" ===`);
-        console.log(`Currently tracking ${this.personHistory.length} people`);
+console.log(`Currently tracking ${this.personHistory.length} people`);
+
+for (const existingPerson of this.personHistory) {
+    if (existingPerson.isSilhouette) continue;
+    
+    // ADD THIS:
+    console.log(`\n--- Testing against: "${existingPerson.description}" ---`);
+    
+    const matchResult = this.analyzer.matchScore(
+        existingPerson.description, 
+        newPerson.description
+    );
+    
+    // ADD THIS:
+    console.log(`FULL RESULT:`, matchResult);
+    console.log(`Words1:`, matchResult.details.words1);
+    console.log(`Words2:`, matchResult.details.words2);
+    console.log(`Bigrams1:`, matchResult.details.bigrams1);
+    console.log(`Bigrams2:`, matchResult.details.bigrams2);
+    console.log(`Breakdown:`, this.analyzer.formatBreakdown(matchResult.breakdown));}
+
+    // debugging end
         
         for (const existingPerson of this.personHistory) {
             if (existingPerson.isSilhouette) continue;
@@ -359,6 +380,8 @@ class Vigil {
             const confidenceLabel = bestMatch.confidence === 'confirmed' ? ' ✓' : '';
             this.addLog(`  ↻ Recurring person${confidenceLabel} (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
             this.addLog(`"${newPerson.description}"`);
+            // this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
+            // over here
             
             const thresholds = this.config.alertThresholds;
             const prevDuration = count > 1 ? this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]) : 0;
