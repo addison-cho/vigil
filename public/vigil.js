@@ -1,5 +1,5 @@
 import { RealtimeVision } from 'https://esm.sh/@overshoot/sdk';
-import { DescAnalyzer } from './language.js';
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0';
 
 class Vigil {
     constructor() {
@@ -7,14 +7,12 @@ class Vigil {
         this.personHistory = [];
         this.alertCount = 0;
         this.vision = null;
+        this.embedder = null;
         this.totalDetections = 0;
         this.processingQueue = Promise.resolve();
 
-        this.analyzer = new DescAnalyzer({
-            minMatchScore: 4.7
-        });
-
         this.config = {
+            similarityThreshold: 0.8,  // Cosine similarity threshold for matching
             alertThresholds: {
                 awareness: 15,
                 caution: 30,
@@ -24,6 +22,60 @@ class Vigil {
         };
 
         this.initUI();
+        this.initEmbedder();
+    }
+
+    async initEmbedder() {
+        try {
+            console.log("Loading CLIP embedding model...");
+            this.embedder = await pipeline(
+                'feature-extraction',
+                'Xenova/all-MiniLM-L6-v2'
+            );
+            console.log("✓ Embedding model loaded");
+        } catch (error) {
+            console.error("Failed to load embedding model:", error);
+            this.addLog("⚠️ Warning: Embedding model failed to load. Matching may not work.", 'system');
+        }
+    }
+
+    async getEmbedding(text) {
+        if (!this.embedder) {
+            console.warn("Embedder not ready yet");
+            return null;
+        }
+        
+        const output = await this.embedder(text, {
+            pooling: 'mean',
+            normalize: true
+        });
+        
+        return Array.from(output.data);
+    }
+
+    cosineSimilarity(vec1, vec2) {
+        if (!vec1 || !vec2 || vec1.length !== vec2.length) {
+            return 0;
+        }
+        
+        let dotProduct = 0;
+        let mag1 = 0;
+        let mag2 = 0;
+        
+        for (let i = 0; i < vec1.length; i++) {
+            dotProduct += vec1[i] * vec2[i];
+            mag1 += vec1[i] * vec1[i];
+            mag2 += vec2[i] * vec2[i];
+        }
+        
+        return dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
+    }
+
+    extractGender(description) {
+        const lower = description.toLowerCase();
+        if (lower.includes('male') && !lower.includes('female')) return 'male';
+        if (lower.includes('female')) return 'female';
+        return 'person';
     }
 
     async initUI() {
@@ -62,34 +114,31 @@ class Vigil {
     }
 
     getPrompt() {
-        return `Describe ONLY people visible. Return JSON:
-        {
-            "people": [{
-                "description": "gender, upper clothing, lower clothing, worn accessories"
-            }],
-            "count": number
-        }
+        return `Describe EVERY human in the scene using this exact format. If none, describe none.
 
-        VERY IMPORTANT: Do NOT write "child."
+            Format (use this order):
+            [Gender] wearing [upper body clothing with colors], [lower body clothing with colors], [accessories if visible on their body]
+            Rules:
+            - Gender: Use gender only on adults you are certain about ("male" or "female"). If gender is unclear or person is a child, use "person".
+            - Colors: Be specific (dark green, navy blue, light beige, maroon. When figuring out colors, know that lighting may affect appearance.). 
+            - Adjectives: Keep it simple and mention only if certain
+            - Upper clothing: State garment type(s) and colors(s) (jacket, shirt, hoodie, cardigan)
+            - Lower clothing: State garment type and color (pants, jeans, shorts, trousers)
+            - Accessories: Only mention if you are confident and ONLY if the accessory is physically on the person's back or head (backpack, bag, hat, headphones)
+            - Skip: hair details, facial features, shoes, exact height, patterns
 
-        CRITICAL COLOR RULES:
-        - ALWAYS identify specific colors, even if dark/dim: "dark green", "dark blue", "dark gray", "navy", etc.
-        - NEVER use just "dark" or "light" or "light-colored" alone - always include the actual color
-        - In extreme uncertainty, you can use "dark"
-        - Common colors in dim light: dark green, dark blue, navy, charcoal, gray, brown, maroon
+            Return JSON:
+            {
+                "people": [{
+                    "description": "follows format above"
+                }],
+                "count": number
+            }
 
-        Format rules:
-        - Upper clothing: "COLOR(S) GARMENT(S)" - e.g. "dark green jacket", "red hoodie over white shirt"
-        - Lower clothing: "COLOR GARMENT" - e.g. "blue jeans", "black pants"  
-        - Accessories: list if visible and being worn - "backpack", "headphones", "baseball cap" (omit if none)
-        - Colors: be specific - "dark green" not just "dark", "light blue" not just "light"
-        - ALWAYS describe both upper AND lower body clothing
-        - Order: always COLOR before GARMENT ("black jacket" never "jacket black")
-        - Return ONLY the JSON object, no markdown code blocks, no backticks, no additional text
-
-        Examples:
-        {"people": [{"description": "male, dark green puffer jacket, black pants, backpack"}], "count": 1}
-        {"people": [{"description": "female, red hoodie, blue jeans, headphones"}], "count": 1}`;
+            Examples:
+            {"people": [{"description": "Male wearing dark green hooded jacket, black pants"}], "count": 1}
+            {"people": [{"description": "Female wearing brown cardigan, beige pants, white shoulder bag"}, {"description": "Person wearing light green shirt, blue shorts"}], "count": 2}
+            Return ONLY valid JSON.`;
     }
 
     async start() {
@@ -97,6 +146,14 @@ class Vigil {
         const videoPath = document.getElementById('videoSelect').value;
 
         if (!videoPath) return;
+
+        // Check if embedder is ready
+        if (!this.embedder) {
+            this.addLog("⚠️ Waiting for embedding model to load...", 'system');
+            // Wait a bit and retry
+            setTimeout(() => this.start(), 2000);
+            return;
+        }
 
         this.personHistory = [];
         this.alertCount = 0;
@@ -121,10 +178,10 @@ class Vigil {
             prompt: this.getPrompt(),
             source: { type: 'video', file: file },
             processing: {
-                clip_length_seconds: 3,
-                delay_seconds: 3,
-                fps: 15,
-                sampling_ratio: 0.1
+                clip_length_seconds: 5,
+                delay_seconds: 5,
+                fps: 30,
+                sampling_ratio: 1
             },
             onResult: (result) => {
                 this.processingQueue = this.processingQueue.then(() => this.handleDetection(result));
@@ -149,7 +206,7 @@ class Vigil {
         this.generateEndReport();
     }
 
-    handleDetection(result) {
+    async handleDetection(result) {
         try {
             if (!result.result || result.result.trim() === '') {
                 console.warn("Received empty result, skipping...");
@@ -172,15 +229,9 @@ class Vigil {
             if (data.count > 0) {
                 this.totalDetections++;
 
-                data.people.forEach((person) => {
-                    const specificityScore = this.getDescriptionSpecificity(person.description);
-                    
-                    if (specificityScore < 2) {
-                        this.trackSilhouette(person, timestamp);
-                    } else {
-                        this.trackPerson(person, timestamp);
-                    }
-                });
+                for (const person of data.people) {
+                    await this.trackPerson(person, timestamp);
+                }
 
                 this.updateStats();
             }
@@ -188,84 +239,12 @@ class Vigil {
         catch (e) {
             console.error("Error parsing JSON:", e);
             console.log("Raw result:", result.result);
-            console.log("Attempted to parse:", result.result.substring(0, 200));
             console.log("Skipping this frame and continuing...");
         }
     }
-    
-    getDescriptionSpecificity(description) {
-        const normalized = description.toLowerCase();
-        let specificityScore = 0;
-        
-        const specificColors = ['black', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'white', 'gray', 'brown'];
-        for (const color of specificColors) {
-            if (normalized.includes(color)) specificityScore += 2;
-        }
-        
-        const accessories = ['backpack', 'bag', 'headphones', 'glasses', 'hat', 'cap', 'beanie'];
-        for (const accessory of accessories) {
-            if (normalized.includes(accessory)) specificityScore += 3;
-        }
-        
-        const specificGarments = ['puffer', 'puffy', 'hoodie', 'sweater', 'jeans', 'shorts'];
-        for (const garment of specificGarments) {
-            if (normalized.includes(garment)) specificityScore += 1;
-        }
 
-        if (normalized.includes('female') || normalized.includes('male')) {
-            specificityScore += 1;
-        }
-        
-        return specificityScore;
-    }
-    
-    trackSilhouette(newPerson, timestamp) {
-        let silhouette = this.personHistory.find(p => p.isSilhouette);
-        
-        if (!silhouette) {
-            silhouette = {
-                description: "👤 Unidentifiable silhouette/figure",
-                isSilhouette: true,
-                timestamps: [],
-                firstSeen: timestamp,
-                lastSeen: timestamp,
-                allDescriptions: [],
-                vagueDescriptions: [],
-                confidence: 'silhouette'
-            };
-            this.personHistory.push(silhouette);
-            this.addLog(`  👤 Created silhouette tracker for vague detections`);
-        }
-        
-        silhouette.timestamps.push(timestamp);
-        silhouette.lastSeen = timestamp;
-        
-        if (!silhouette.vagueDescriptions.includes(newPerson.description)) {
-            silhouette.vagueDescriptions.push(newPerson.description);
-        }
-        
-        const durationSeconds = this.getTimeDurationSeconds(silhouette.firstSeen, silhouette.lastSeen);
-        const count = silhouette.timestamps.length;
-        
-        this.addLog(`  👤 Silhouette detected (${count}x, ${this.formatDuration(durationSeconds)}): "${newPerson.description}"`);
-        
-        const thresholds = this.config.alertThresholds;
-        const prevDuration = count > 1 ? this.getTimeDurationSeconds(silhouette.firstSeen, silhouette.timestamps[silhouette.timestamps.length - 2]) : 0;
-        
-        if (prevDuration < thresholds.awareness && durationSeconds >= thresholds.awareness) {
-            this.addLog(`  ⚠️  AWARENESS: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}`);
-            this.alertCount++;
-        } else if (prevDuration < thresholds.caution && durationSeconds >= thresholds.caution) {
-            this.addLog(`  🔶 CAUTION: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}`);
-            this.alertCount++;
-        } else if (prevDuration < thresholds.alert && durationSeconds >= thresholds.alert) {
-            this.addLog(`  🚨 ALERT: Unidentifiable figure present for ${this.formatDuration(durationSeconds)}!`);
-            this.addLog(`     First seen: ${new Date(silhouette.firstSeen).toLocaleTimeString()}`);
-            this.alertCount++;
-        }
-    }
-
-    trackPerson(newPerson, timestamp) {
+    async trackPerson(newPerson, timestamp) {
+        // Cleanup: remove inactive people
         const timeoutSeconds = this.config.removalTimeoutSeconds;
         const currentTime = new Date(timestamp);
         
@@ -297,58 +276,45 @@ class Vigil {
                 'system'
             );
         });
+
+        // Get embedding for new person
+        const newEmbedding = await this.getEmbedding(newPerson.description);
+        if (!newEmbedding) {
+            console.warn("Could not get embedding, skipping person");
+            return;
+        }
+
+        const newGender = this.extractGender(newPerson.description);
         
         let bestMatch = null;
         let bestScore = 0;
         
         console.log(`\n=== Matching new person: "${newPerson.description}" ===`);
-console.log(`Currently tracking ${this.personHistory.length} people`);
-
-for (const existingPerson of this.personHistory) {
-    if (existingPerson.isSilhouette) continue;
-    
-    // ADD THIS:
-    console.log(`\n--- Testing against: "${existingPerson.description}" ---`);
-    
-    const matchResult = this.analyzer.matchScore(
-        existingPerson.description, 
-        newPerson.description
-    );
-    
-    // ADD THIS:
-    console.log(`FULL RESULT:`, matchResult);
-    console.log(`Words1:`, matchResult.details.words1);
-    console.log(`Words2:`, matchResult.details.words2);
-    console.log(`Bigrams1:`, matchResult.details.bigrams1);
-    console.log(`Bigrams2:`, matchResult.details.bigrams2);
-    console.log(`Breakdown:`, this.analyzer.formatBreakdown(matchResult.breakdown));}
-
-    // debugging end
+        console.log(`Currently tracking ${this.personHistory.length} people`);
         
         for (const existingPerson of this.personHistory) {
-            if (existingPerson.isSilhouette) continue;
-            
-            const matchResult = this.analyzer.matchScore(
-                existingPerson.description, 
-                newPerson.description
-            );
-            
-            if (matchResult.score > 3) {
-                console.log(`Comparing: "${existingPerson.description}"`);
-                console.log(`  Score: ${matchResult.score.toFixed(1)}, Matched: ${matchResult.matched}, Threshold: ${matchResult.threshold}`);
-                console.log(`  Breakdown:`, this.analyzer.formatBreakdown(matchResult.breakdown));
+            // Skip if different gender
+            if (!(existingPerson.gender == 'person' || newGender == 'person') && existingPerson.gender !== newGender) {
+                console.log(`Skipping "${existingPerson.description}" - different gender`);
+                continue;
             }
             
-            if (matchResult.matched && matchResult.score > bestScore) {
+            const similarity = this.cosineSimilarity(newEmbedding, existingPerson.embedding);
+            
+            console.log(`Comparing: "${existingPerson.description}"`);
+            console.log(`  Similarity: ${similarity.toFixed(3)}, Threshold: ${this.config.similarityThreshold}`);
+            
+            if (similarity >= this.config.similarityThreshold && similarity > bestScore) {
                 bestMatch = existingPerson;
-                bestScore = matchResult.score;
-                console.log(`  ✓ New best match! Score: ${bestScore.toFixed(1)}`);
+                bestScore = similarity;
+                console.log(`  ✓ New best match! Similarity: ${bestScore.toFixed(3)}`);
             }
         }
         
-        console.log(`Best match found: ${bestMatch ? 'YES (score: ' + bestScore.toFixed(1) + ')' : 'NO'}`);
+        console.log(`Best match found: ${bestMatch ? 'YES (similarity: ' + bestScore.toFixed(3) + ')' : 'NO'}`);
 
         if (bestMatch) {
+            // Update existing person
             bestMatch.timestamps.push(timestamp);
             bestMatch.lastSeen = timestamp;
             
@@ -367,22 +333,19 @@ for (const existingPerson of this.personHistory) {
                 this.addLog(`  ✓ Person confirmed after ${count} sightings`, 'system');
             }
             
-            // Consolidate with other matches (only for tentative people to save cycles)
+            // Consolidate with other matches periodically
             if (bestMatch.confidence === 'tentative' || count % 5 === 0) {
-                this.consolidateMatches(bestMatch);
+                await this.consolidateMatches(bestMatch);
             }
             
             const durationSeconds = this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.lastSeen);
             
-            const matchResult = this.analyzer.matchScore(bestMatch.description, newPerson.description);
-            const breakdownStr = this.analyzer.formatBreakdown(matchResult.breakdown);
-            
             const confidenceLabel = bestMatch.confidence === 'confirmed' ? ' ✓' : '';
             this.addLog(`  ↻ Recurring person${confidenceLabel} (seen ${count}x, ${this.formatDuration(durationSeconds)})`);
-            this.addLog(`"${newPerson.description}"`);
-            // this.addLog(`     Match: score=${matchResult.score.toFixed(1)} [${breakdownStr}]`);
-            // over here
+            this.addLog(`     "${newPerson.description}"`);
+            this.addLog(`     Similarity: ${bestScore.toFixed(3)}`);
             
+            // Time-based alerts
             const thresholds = this.config.alertThresholds;
             const prevDuration = count > 1 ? this.getTimeDurationSeconds(bestMatch.firstSeen, bestMatch.timestamps[bestMatch.timestamps.length - 2]) : 0;
             
@@ -399,8 +362,11 @@ for (const existingPerson of this.personHistory) {
             }
         }
         else {
+            // Create new person
             const personRecord = {
                 description: newPerson.description,
+                embedding: newEmbedding,
+                gender: newGender,
                 timestamps: [timestamp],
                 firstSeen: timestamp,
                 lastSeen: timestamp,
@@ -413,20 +379,21 @@ for (const existingPerson of this.personHistory) {
         }
     }
 
-    consolidateMatches(targetPerson) {
+    async consolidateMatches(targetPerson) {
         const toRemove = [];
         
         for (let i = 0; i < this.personHistory.length; i++) {
             const otherPerson = this.personHistory[i];
             
-            if (otherPerson === targetPerson || otherPerson.isSilhouette) continue;
+            // Skip self and different genders
+            if (otherPerson === targetPerson || otherPerson.gender !== targetPerson.gender) {
+                continue;
+            }
             
-            const matchResult = this.analyzer.matchScore(
-                targetPerson.description,
-                otherPerson.description
-            );
+            const similarity = this.cosineSimilarity(targetPerson.embedding, otherPerson.embedding);
             
-            if (matchResult.matched) {
+            if (similarity >= this.config.similarityThreshold) {
+                // Merge other person into target
                 targetPerson.timestamps.push(...otherPerson.timestamps);
                 
                 if (new Date(otherPerson.firstSeen) < new Date(targetPerson.firstSeen)) {
@@ -447,12 +414,13 @@ for (const existingPerson of this.personHistory) {
                 
                 this.addLog(
                     `  🔗 Consolidated: merged "${otherPerson.description}" ` +
-                    `(${otherPerson.timestamps.length} detections) into main track`,
+                    `(${otherPerson.timestamps.length} detections, similarity: ${similarity.toFixed(3)}) into main track`,
                     'system'
                 );
             }
         }
         
+        // Remove consolidated entries (reverse order to preserve indices)
         for (let i = toRemove.length - 1; i >= 0; i--) {
             this.personHistory.splice(toRemove[i], 1);
         }
@@ -508,14 +476,10 @@ for (const existingPerson of this.personHistory) {
             
             console.log(`Person #${index + 1}:`);
             console.log(`  Primary description: "${person.description}"`);
+            console.log(`  Gender: ${person.gender}`);
             console.log(`  Confidence: ${person.confidence || 'N/A'}`);
             
-            if (person.isSilhouette && person.vagueDescriptions && person.vagueDescriptions.length > 0) {
-                console.log(`  Vague descriptions captured:`);
-                person.vagueDescriptions.forEach(desc => {
-                    console.log(`    - "${desc}"`);
-                });
-            } else if (person.allDescriptions && person.allDescriptions.length > 1) {
+            if (person.allDescriptions && person.allDescriptions.length > 1) {
                 console.log(`  All descriptions seen:`);
                 person.allDescriptions.forEach(desc => {
                     console.log(`    - "${desc}"`);
@@ -536,7 +500,7 @@ for (const existingPerson of this.personHistory) {
         sortedPeople.forEach((person, index) => {
             const duration = this.getTimeDurationSeconds(person.firstSeen, person.lastSeen);
             const detectionCount = person.timestamps.length;
-            const label = person.isSilhouette ? ' [SILHOUETTE]' : person.confidence === 'confirmed' ? ' ✓' : ' ?';
+            const label = person.confidence === 'confirmed' ? ' ✓' : ' ?';
             this.addLog(`Person #${index + 1}: "${person.description}"${label} (${detectionCount}x, ${this.formatDuration(duration)})`, 'report');
         });
     }
